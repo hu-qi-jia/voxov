@@ -8,6 +8,16 @@ def sse(*chunks):
     body = "".join(f"data: {json.dumps({'choices': [{'delta': {'content': c}}]})}\n\n" for c in chunks)
     return body + "data: [DONE]\n\n"
 
+def sse_chunk(*chunks):
+    """仅内容块、不带 [DONE]：截断/续写场景需手工控制流结束方式。"""
+    return "".join(f"data: {json.dumps({'choices': [{'delta': {'content': c}}]})}\n\n"
+                   for c in chunks)
+
+def sse_end(finish):
+    """正常收尾：finish_reason 块 + [DONE]。"""
+    return ("data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": finish}]})
+            + "\n\ndata: [DONE]\n\n")
+
 def make_client(handler):
     transport = httpx.MockTransport(handler)
     c = LLMClient("https://api.example.com/v1", "sk-test", "test-model")
@@ -29,7 +39,7 @@ def test_payload_and_headers():
     assert captured["url"].endswith("/chat/completions")
     assert captured["auth"] == "Bearer sk-test"
     assert captured["json"]["stream"] is True
-    assert captured["json"]["temperature"] == 0.3 and captured["json"]["max_tokens"] == 500
+    assert captured["json"]["temperature"] == 0.3 and captured["json"]["max_tokens"] == 1024
 
 def test_malformed_sse_ignored():
     body = "data: not-json\n\ndata: {\"choices\": [{\"delta\": {\"content\": \"好\"}}]}\n\ndata: [DONE]\n\n"
@@ -93,3 +103,63 @@ def test_warmup_sends_tiny_request_and_swallows_errors():
         raise httpx.ConnectError("down")
     c2 = make_client(dead)
     c2.warmup()                                 # 不抛即通过
+
+
+# --- 回答中断修复：max_tokens 打满 / 流中途断开 → 带前缀自动续写（不重复） ---
+def test_finish_reason_length_auto_continues():
+    """finish_reason=length：静默截断的主因（推理型模型思考也计入 max_tokens）。"""
+    calls = []
+
+    def handler(req):
+        calls.append(json.loads(req.content))
+        if len(calls) == 1:
+            return httpx.Response(200, text=sse_chunk("第一段被截断的") + sse_end("length"))
+        return httpx.Response(200, text=sse_chunk("续上的后半段。") + sse_end("stop"))
+
+    out = "".join(make_client(handler).stream([{"role": "user", "content": "x"}]))
+    assert out == "第一段被截断的续上的后半段。"      # 无缝拼接、不重复
+    assert len(calls) == 2
+    # 第二次请求带上了已收内容做助手前缀 + 继续指令
+    assert calls[1]["messages"][-2] == {"role": "assistant", "content": "第一段被截断的"}
+    assert "继续" in calls[1]["messages"][-1]["content"]
+
+def test_midstream_break_salvages_with_continuation():
+    """流中途网络断：已收内容不丢，续写补齐而非整发重试（整发会重复）。"""
+    calls = []
+
+    def broken_then_ok(req):
+        calls.append(json.loads(req.content))
+        if len(calls) == 1:
+            def gen():
+                yield sse_chunk("开头").encode()
+                raise httpx.ReadError("connection reset")   # 吐到一半断流
+            return httpx.Response(200, content=gen())
+        return httpx.Response(200, text=sse_chunk("结尾") + sse_end("stop"))
+
+    out = "".join(make_client(broken_then_ok).stream([{"role": "user", "content": "x"}]))
+    assert out == "开头结尾"
+    assert calls[1]["messages"][-2]["content"] == "开头"
+
+def test_continuation_rounds_capped():
+    """每轮都 length 也不许无限续写：封顶后停止，不炸不挂。"""
+    n = {"n": 0}
+    def handler(req):
+        n["n"] += 1
+        return httpx.Response(200, text=sse_chunk(f"第{n['n']}段") + sse_end("length"))
+    c = make_client(handler)
+    c.max_rounds = 3
+    out = "".join(c.stream([{"role": "user", "content": "x"}]))
+    assert out == "第1段第2段第3段"
+    assert n["n"] == 3
+
+def test_midstream_break_every_round_raises_llmerror():
+    """续写轮也断流：浮出 LLMError，UI 才能标注截断。"""
+    def always_break(req):
+        def gen():
+            yield sse_chunk("片段").encode()
+            raise httpx.ReadError("reset")
+        return httpx.Response(200, content=gen())
+    c = make_client(always_break)
+    c.max_rounds = 2
+    with pytest.raises(LLMError):
+        "".join(c.stream([{"role": "user", "content": "x"}]))

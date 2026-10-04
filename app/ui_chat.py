@@ -52,6 +52,30 @@ class InterviewerBubble(QWidget):
         row.addWidget(_avatar("面", "#2c2c2e", "#adb2b8", "#3d3d40"), 0, Qt.AlignTop)
 
 
+class _AutoHeightBrowser(QTextBrowser):
+    """无边框、无滚动条的流式正文。
+    QTextBrowser 默认自带 StyledPanel 内框（QSS border:none 清不掉），
+    加上高度按旧宽度误算导致裁字+滚动条——三者叠加读起来像"文字被框住"。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setOpenExternalLinks(False)
+
+    def refit(self) -> None:
+        """按当前视口宽度实排正文，高度兜住全部内容。"""
+        doc = self.document()
+        doc.setTextWidth(self.viewport().width() or doc.textWidth())
+        self.setFixedHeight(max(28, int(doc.size().height()) + 10))
+
+    def resizeEvent(self, ev) -> None:  # 宽度变了必须重排，否则按旧宽度算高会裁字
+        super().resizeEvent(ev)
+        if ev.oldSize().width() != self.width():
+            self.refit()
+
+
 class AnswerBubble(QWidget):
     """回答：左对齐，头像在左，layer-1 单层面板 + markdown 流式正文。
     正文区高度随内容自适应（不留大空白）；空态显示「正在生成…」；
@@ -75,9 +99,8 @@ class AnswerBubble(QWidget):
         title = StrongBodyLabel(question, panel)
         title.setWordWrap(True)
         pl.addWidget(title)
-        self.view = QTextBrowser(panel)
+        self.view = _AutoHeightBrowser(panel)
         self.view.setObjectName("answer")
-        self.view.setOpenExternalLinks(False)
         self.view.setPlaceholderText("正在生成…")
         self.view.setFixedHeight(36)      # 空态占位高度；首个分块后自适应
         pl.addWidget(self.view)
@@ -94,17 +117,12 @@ class AnswerBubble(QWidget):
             return
         self._buf += delta
         self.view.setMarkdown(self._buf)
-        self._fit_height()
+        self.view.refit()
         self._parent_scroll_to_bottom()
 
     def mark_interrupted(self) -> None:
         if self._buf:
             self.note.setText("生成中断——以上为已收到的部分，可稍后重试")
-
-    def _fit_height(self) -> None:
-        doc = self.view.document()
-        h = int(doc.size().height()) + 18
-        self.view.setFixedHeight(max(28, h))
 
     def _parent_scroll_to_bottom(self) -> None:
         p = self.parent()

@@ -71,6 +71,29 @@ def test_answer_streams_into_chat_bubble(win):
     assert "RDB" in w._chat_answer.view.toPlainText()
 
 
+# --- 气泡正文：无内框（QTextBrowser 原生 StyledPanel 会被读成"文字带边框"）---
+def test_answer_bubble_no_frame_and_fits_height(win):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QFrame
+    w, _ = win
+    b = w.chat_page.begin_answer("讲讲 Redis 持久化")
+    b.append("第一点。")
+    b.append("**RDB** 是定时快照，恢复快但可能丢数据；**AOF** 是追加日志，"
+             "丢数据少但文件更大、恢复更慢，生产上常两者混用做冷热备。")
+    assert b.view.frameShape() == QFrame.NoFrame
+    assert b.view.verticalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
+    assert b.view.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
+    # 宽度实排后的正文高度必须被 view 兜住，否则裁字+出滚动条=看起来像框
+    assert b.view.height() >= b.view.document().size().height() - 1
+
+    # 拉宽气泡后要按新宽度重排（更宽 → 更矮），不许残留按旧宽度算的高度
+    old_h = b.view.height()
+    b.resize(b.width() + 240, b.height())
+    b.repaint()
+    assert b.view.height() <= old_h + 1
+    assert b.view.height() >= b.view.document().size().height() - 1
+
+
 # --- 自动作答：像问题才触发，开关可关 ---
 def test_auto_answer_triggers_on_question(win, monkeypatch):
     w, _ = win

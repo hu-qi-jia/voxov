@@ -88,10 +88,11 @@ def test_onnx_embedder_query_prefix():
     assert out.endswith("Redis 持久化")
 
 
-# --- 生成中断：流中途失败不重发（防重复），已收部分保留 ---
+# --- 生成中断：流中途失败不整发重发（防重复），带已收前缀续写抢救 ---
 def test_mid_stream_failure_raises_no_retry(monkeypatch):
+    import json as _json
     import httpx
-    from core.generator import LLMClient, LLMError
+    from core.generator import LLMClient
 
     n = {"req": 0}
 
@@ -101,17 +102,24 @@ def test_mid_stream_failure_raises_no_retry(monkeypatch):
 
     def handler(req):
         n["req"] += 1
-        return httpx.Response(200, content=body_gen())
+        msgs = _json.loads(req.content)["messages"]
+        if len(msgs) == 1:                  # 首轮：吐到一半断流
+            return httpx.Response(200, content=body_gen())
+        # 抢救轮必须带已收内容做助手前缀（= 不是整发重发），模型从断点接着写
+        assert msgs[-2] == {"role": "assistant", "content": "Part 1"}
+        return httpx.Response(200, text=(
+            'data: {"choices": [{"delta": {"content": " 2"}}]}\n\n'
+            'data: {"choices": [{"delta": {}, "finish_reason": "stop"}]}\n\n'
+            'data: [DONE]\n\n'))
 
     transport = httpx.MockTransport(handler)
     c = LLMClient("https://api.example.com/v1", "sk", "m")
     c._transport = transport
     outs = []
-    with pytest.raises(LLMError, match="生成中断"):
-        for d in c.stream([{"role": "user", "content": "x"}]):
-            outs.append(d)
-    assert outs == ["Part 1"]
-    assert n["req"] == 1                    # 已吐字后失败：不整发重试
+    for d in c.stream([{"role": "user", "content": "x"}]):
+        outs.append(d)
+    assert outs == ["Part 1", " 2"]         # 无缝补齐、不重复
+    assert n["req"] == 2
 
 
 def test_connect_failure_still_retries_once():
