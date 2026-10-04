@@ -1,0 +1,18 @@
+# 模型与数据（隐私 + 体积，绝不入库）
+models/
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# IDE / 系统
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
