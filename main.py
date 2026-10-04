@@ -31,23 +31,19 @@ def build_app():
                           recorder=recorder)
 
     recorder = SessionRecorder(sessions_dir=cfg.sessions_dir)          # 审查 I7：落盘
-    rehearsal_rag = lambda: make_rag(SessionRecorder(  # noqa: E731 - 彩排独立会话（spec §5④）
-        sessions_dir=cfg.sessions_dir, rehearsal=True))
     rag = make_rag(recorder)
     if cfg.llm_base_url and cfg.llm_api_key:   # 后台预热 LLM 连接，首答不付冷启动
         import threading
         threading.Thread(target=rag.llm.warmup, daemon=True, name="llm-warmup").start()
-    return cfg, kb, rag, recorder, rehearsal_rag
+    return cfg, kb, rag, recorder
 
 
 def main() -> int:
     app = QApplication(sys.argv)
     from app.theme import apply as apply_theme
     apply_theme(app)
-    from qfluentwidgets import setTheme, Theme
-    setTheme(Theme.DARK)          # VoxRecall/DSH 暗色体系
     app.setQuitOnLastWindowClosed(False)
-    cfg, kb, rag, recorder, rehearsal_factory = build_app()
+    cfg, kb, rag, recorder = build_app()
     # 单实例：两个实例同时自动下载同一目录会互相破坏
     from app.instance import acquire_single_instance, release_single_instance
     if not acquire_single_instance(cfg.data_dir):
@@ -64,8 +60,7 @@ def main() -> int:
         pass
     from core.downloader import models_ready
     models_ok = models_ready(cfg.models_dir)
-    win = MainWindow(cfg, kb_factory=lambda: kb, rag_factory=lambda: rag,
-                     rehearsal_rag_factory=rehearsal_factory)
+    win = MainWindow(cfg, kb_factory=lambda: kb, rag_factory=lambda: rag)
     win._recorder = recorder
     win._started_without_models = not models_ok   # 成功后提示重启升级语义检索
     win.show()

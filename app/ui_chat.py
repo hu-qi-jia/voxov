@@ -76,8 +76,28 @@ class AnswerTurn(QWidget):
             return
         self._buf += delta
         self.view.setMarkdown(self._buf)
+        self._recolor_bold()
         self.view.refit()
         self._parent_scroll_to_bottom()
+
+    def _recolor_bold(self) -> None:
+        """setMarkdown 不经过 defaultStyleSheet：直接遍历片段把加粗涂成 accent。"""
+        from PySide6.QtGui import QBrush, QColor, QTextCursor
+        doc = self.view.document()
+        block = doc.firstBlock()
+        while block.isValid():
+            it = block.begin()
+            while not it.atEnd():
+                frag = it.fragment()
+                if frag.isValid() and frag.charFormat().fontWeight() > 400:
+                    c = QTextCursor(doc)
+                    c.setPosition(frag.position())
+                    c.setPosition(frag.position() + frag.length(), QTextCursor.KeepAnchor)
+                    fmt = frag.charFormat()
+                    fmt.setForeground(QBrush(QColor(ACCENT)))
+                    c.mergeCharFormat(fmt)
+                it += 1
+            block = block.next()
 
     def mark_interrupted(self) -> None:
         if self._buf:

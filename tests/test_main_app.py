@@ -12,6 +12,7 @@ def test_build_app_reads_config_from_app_root(tmp_path, monkeypatch):
         json.dumps({"llm_model": "m1", "llm_base_url": "https://x/v1"}), encoding="utf-8")
     import main
     res = main.build_app()
+    assert len(res) == 4  # cfg, kb, rag, recorder（彩排工厂已删）
     cfg = res[0]
     assert cfg.llm_model == "m1"
     assert cfg.kb_path == tmp_path / "data" / "kb.db"

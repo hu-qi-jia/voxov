@@ -42,14 +42,6 @@ class DownloadWorker(QThread):
         except Exception as exc:
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 
-    def run(self) -> None:
-        try:
-            from core.downloader import ensure_models
-            ensure_models(self.models_dir, self.line.emit)
-            self.finished_ok.emit()
-        except Exception as exc:
-            self.failed.emit(f"{type(exc).__name__}: {exc}")
-
 
 class LoadWorker(QThread):
     """转写器后台加载（Bug 2 / M7）：SenseVoice 加载 5–20s，不得卡 GUI 线程。"""

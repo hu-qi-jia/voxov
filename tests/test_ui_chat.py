@@ -45,7 +45,8 @@ def test_answer_view_frameless_and_no_scrollbars(page):
 def test_answer_bold_renders_accent(page):
     b = page.begin_answer()
     b.append("**重点**内容")
-    assert "#5af78e" in b.view.document().defaultStyleSheet().lower()
+    assert "#5af78e" in b.view.document().defaultStyleSheet().lower()  # 无害保留
+    assert "#5af78e" in b.view.toHtml()   # mergeCharFormat 写进 span（真断言）
 
 
 def test_turns_are_separated_by_hline(page):

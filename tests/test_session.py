@@ -63,11 +63,3 @@ def test_recorder_persists_jsonl(tmp_path):
     recs = [_json.loads(l) for l in lines]
     assert [x["type"] for x in recs] == ["transcript", "qa"]
     assert recs[1]["question"] == "介绍Redis" and "RDB" in recs[1]["answer"]
-
-def test_recorder_rehearsal_goes_to_subdir(tmp_path):
-    # 审查 I7：彩排会话与真实会话分目录（spec §5④）
-    from core.session import SessionRecorder
-    r = SessionRecorder(sessions_dir=tmp_path, rehearsal=True)
-    r.add_qa("q", [], "a")
-    assert list((tmp_path / "rehearsal").glob("*.json"))
-    assert list(tmp_path.glob("*.json")) == []

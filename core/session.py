@@ -60,16 +60,14 @@ class QATurn:
 
 class SessionRecorder:
     """面试全程记录 + md 导出（spec §5③）。
-    审查 I7：传 sessions_dir 时以 JSONL 追加落盘（spec §4），崩溃不丢已记录内容；
-    rehearsal=True 写入 sessions/rehearsal/ 子目录（spec §5④）。"""
+    审查 I7：传 sessions_dir 时以 JSONL 追加落盘（spec §4），崩溃不丢已记录内容。"""
 
-    def __init__(self, sessions_dir: Path | None = None, rehearsal: bool = False) -> None:
+    def __init__(self, sessions_dir: Path | None = None) -> None:
         self.turns: list[QATurn] = []
         self.transcripts: list[TranscriptEntry] = []
         self._json_path: Path | None = None
         if sessions_dir is not None:
-            d = sessions_dir / "rehearsal" if rehearsal else sessions_dir
-            self._json_path = d / f"{datetime.now():%Y%m%d-%H%M%S}.json"
+            self._json_path = sessions_dir / f"{datetime.now():%Y%m%d-%H%M%S}.json"
 
     def _persist(self, record: dict) -> None:
         if self._json_path is None:

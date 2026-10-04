@@ -183,7 +183,9 @@ class MainWindow(QMainWindow):
         self.kb_model.setRowCount(0)
         files = self._kb_factory().list_files()
         for name, n in files:
-            self.kb_model.appendRow([QStandardItem(name), QStandardItem(str(n))])
+            name_item = QStandardItem(name)
+            name_item.setIcon(icon("file-text"))
+            self.kb_model.appendRow([name_item, QStandardItem(str(n))])
         if hasattr(self, "kb_count"):
             blocks = sum(n for _, n in files)
             self.kb_count.setText(f"{len(files)} 文件 · {blocks} 块")

@@ -32,7 +32,7 @@ def win(qtbot, tmp_path, monkeypatch):
 
 
 def _fake_ensure(behavior):
-    def fake(md, log):
+    def fake(md, log, progress=None):   # 与 ensure_models 真实签名一致（含 progress）
         if behavior == "fail":
             raise RuntimeError("网络错误")
         log("[完成] x")
@@ -78,7 +78,7 @@ def test_auto_download_ok_prompts_restart_when_embedder_fell_back(win, qtbot, mo
 def test_download_worker_emits_failed_on_error(qtbot, monkeypatch):
     from app.workers import DownloadWorker
 
-    def boom(models_dir, log):
+    def boom(models_dir, log, progress=None):
         log("[开始下载] fake")
         raise RuntimeError("modelscope import 失败")
 
@@ -96,7 +96,8 @@ def test_download_worker_emits_failed_on_error(qtbot, monkeypatch):
 def test_download_worker_emits_finished_ok_on_success(qtbot, monkeypatch):
     from app.workers import DownloadWorker
 
-    monkeypatch.setattr(dl, "ensure_models", lambda md, log: log("[完成] x"))
+    monkeypatch.setattr(dl, "ensure_models",
+                        lambda md, log, progress=None: log("[完成] x"))
     w = DownloadWorker(models_dir=None)
     lines, oks = [], []
     w.line.connect(lines.append)
@@ -106,11 +107,27 @@ def test_download_worker_emits_finished_ok_on_success(qtbot, monkeypatch):
     assert lines == ["[完成] x"]
 
 
+def test_download_worker_emits_progress(qtbot, monkeypatch):
+    """回归：曾有第二个 run() 覆盖第一个，progress 信号永不发射（设置页进度条停 0）。"""
+    from app.workers import DownloadWorker
+
+    def fake(md, log, progress=None):
+        if progress:
+            progress(0.5)
+
+    monkeypatch.setattr(dl, "ensure_models", fake)
+    w = DownloadWorker(models_dir=None)
+    pcts = []
+    w.progress.connect(pcts.append)
+    w.start()
+    qtbot.waitUntil(lambda: pcts == [0.5], timeout=3000)
+
+
 def test_download_worker_finished_ok_after_wait(qtbot, monkeypatch):
     """QThread.wait 不处理事件：结束后须经事件循环取队列信号（审查轮教训）。"""
     from app.workers import DownloadWorker
 
-    monkeypatch.setattr(dl, "ensure_models", lambda md, log: None)
+    monkeypatch.setattr(dl, "ensure_models", lambda md, log, progress=None: None)
     w = DownloadWorker(models_dir=None)
     oks = []
     w.finished_ok.connect(lambda: oks.append(1))
