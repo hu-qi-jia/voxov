@@ -197,23 +197,7 @@ def test_rehearsal_uses_dedicated_rag_and_hotkey_follows(win, qtbot, tmp_path, m
     assert live.triggered == 0
 
 
-# --- I10：模型缺失时首启自动弹下载向导 ---
-def test_first_run_wizard_auto_opens(win, qtbot, monkeypatch):
-    w, _ = win
-    called = []
-    w._open_wizard = lambda: called.append(1)
-    w.maybe_first_run_wizard()
-    assert called == [1]
-
-
-def test_first_run_wizard_skips_when_models_ready(win, qtbot, monkeypatch):
-    w, _ = win
-    for sub in ("SenseVoiceSmall", "fsmn-vad", "ct-punc", "bge-small-zh-v1.5"):
-        (w.cfg.models_dir / sub).mkdir(parents=True, exist_ok=True)
-    called = []
-    w._open_wizard = lambda: called.append(1)
-    w.maybe_first_run_wizard()
-    assert called == []
+# --- I10：首启缺模型引导 → 已升级为后台自动下载（tests/test_download_flow.py）---
 
 
 # --- I12：知识库无命中时给出"通用回答"标记 ---

@@ -1,6 +1,6 @@
 # app/main_window.py（核心逻辑；样式从简）
 from pathlib import Path
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QStandardItemModel, QStandardItem
 from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel,
                                QMainWindow, QPushButton, QTableView, QVBoxLayout, QWidget)
@@ -32,6 +32,9 @@ class MainWindow(QMainWindow):
         self.bridge = None      # rebind_hotkeys() 创建/重建（审查 I3c）
         self.tray = None        # main.py 注入（急隐藏需要同时藏托盘）
         self._hidden = False
+        self._dl_worker = None          # 首启自动下载（开箱即用）
+        self._dl_heart = None
+        self._started_without_models = False   # main.py 注入：成功后提示重启升级检索
         self.setWindowTitle("Notes")   # 对外中性标题（spec §6.5）
         self.resize(720, 480)
         self._build_ui()
@@ -68,6 +71,9 @@ class MainWindow(QMainWindow):
             row.addWidget(b)
         lay.addLayout(row)
         self.setCentralWidget(central)
+        # 模型状态灯（Task 5 迁入左栏底部；先挂状态栏，测试只认属性）
+        self.model_status_label = QLabel("未下载")
+        self.statusBar().addPermanentWidget(self.model_status_label)
 
     def _reload_kb(self) -> None:
         self.kb_model.setRowCount(0)
@@ -124,13 +130,64 @@ class MainWindow(QMainWindow):
 
     def _open_wizard(self) -> None:
         from app.wizard import ModelWizard
-        ModelWizard(self.cfg, parent=self).exec()
+        ModelWizard(self._dl_worker_or_start, parent=self).exec()
 
-    def maybe_first_run_wizard(self) -> None:
-        """审查 I10：模型缺失时首启自动弹下载向导（spec §3/§8）。"""
+    # --- 首启自动下载（开箱即用，spec §3/§8） ---
+    def maybe_auto_download(self) -> None:
+        """模型缺失时后台自动下载，不弹窗；状态灯反映进度。"""
         from core.downloader import models_ready
-        if not models_ready(self.cfg.models_dir):
-            self._open_wizard()
+        if models_ready(self.cfg.models_dir):
+            self._set_model_state("ok")
+            return
+        self._dl_worker_or_start()
+
+    def _dl_worker_or_start(self):
+        """当前下载 worker；无/已结束则新建并启动（重试=断点续传）。"""
+        from app.workers import DownloadWorker
+        if self._dl_worker is not None and self._dl_worker.isRunning():
+            return self._dl_worker
+        w = DownloadWorker(self.cfg.models_dir)
+        w.failed.connect(self._on_dl_failed)
+        w.finished_ok.connect(self._on_dl_ok)
+        self._dl_worker = w
+        self._set_model_state("dl")
+        self._dl_heart = QTimer(self, interval=5000)
+        self._dl_heart.timeout.connect(self._tick_dl_heartbeat)
+        self._dl_heart.start()
+        w.start()
+        self._tick_dl_heartbeat()
+        return w
+
+    def _on_dl_failed(self, msg: str) -> None:
+        self._stop_dl_heart()
+        self._set_model_state("err")
+        self.statusBar().showMessage(f"模型下载失败：{msg}（点“下载模型”重试）", 10000)
+
+    def _on_dl_ok(self) -> None:
+        self._stop_dl_heart()
+        self._set_model_state("ok")
+        if self._started_without_models:
+            self.statusBar().showMessage("模型已就绪；重启应用后知识库启用语义检索", 10000)
+        else:
+            self.statusBar().showMessage("模型已就绪", 5000)
+
+    def _stop_dl_heart(self) -> None:
+        if self._dl_heart is not None:
+            self._dl_heart.stop()
+
+    def _tick_dl_heartbeat(self) -> None:
+        if self._dl_worker is None:
+            return
+        secs = int(self._dl_worker.elapsed())
+        self.model_status_label.setText(f"下载中… 已 {secs}s")
+
+    def _set_model_state(self, state: str) -> None:
+        text = {"missing": "未下载", "dl": "下载中…", "ok": "模型就绪",
+                "err": "下载失败"}.get(state, "")
+        self.model_status_label.setProperty("state", state)
+        self.model_status_label.setText(text)
+        self.model_status_label.style().unpolish(self.model_status_label)
+        self.model_status_label.style().polish(self.model_status_label)
 
     def _on_hide(self) -> None:
         """急隐藏（spec §6.5/§1）：一切可见痕迹消失——主窗口+悬浮窗+托盘。"""
@@ -148,6 +205,9 @@ class MainWindow(QMainWindow):
             self.bridge.stop()
         if self._worker is not None and self._worker.isRunning():
             self._worker.wait(2000)
+        self._stop_dl_heart()
+        if self._dl_worker is not None and self._dl_worker.isRunning():
+            self._dl_worker.wait(2000)
 
     def quit_app(self) -> None:
         self.shutdown()
