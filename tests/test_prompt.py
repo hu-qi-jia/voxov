@@ -25,3 +25,26 @@ def test_history_last_two_only():
 def test_empty_contexts_omit_refs_section():
     msgs = build_messages("q", [], [])
     assert "参考资料" not in msgs[1]["content"]
+
+# --- 三模式（路由 spec §6） ---
+from core.generator import GENERIC_PROMPT, STATEMENT_PROMPT
+
+def test_generic_mode_swaps_system_and_drops_refs():
+    msgs = build_messages("介绍一下你的项目", CTX, [], mode="generic")
+    assert msgs[0]["content"] == GENERIC_PROMPT
+    assert "参考资料" not in msgs[1]["content"]
+    assert "当前问题：介绍一下你的项目" in msgs[1]["content"]
+
+def test_generic_prompt_forbids_fabricated_refs():
+    assert "禁止" in GENERIC_PROMPT and "资料" in GENERIC_PROMPT
+
+def test_statement_mode_uses_speaker_label():
+    msgs = build_messages("我们团队主要做 ToB 业务", [], [], mode="statement")
+    assert msgs[0]["content"] == STATEMENT_PROMPT
+    assert "当前面试官发言：我们团队主要做 ToB 业务" in msgs[1]["content"]
+    assert "参考资料" not in msgs[1]["content"]
+
+def test_refs_mode_is_default_and_unchanged():
+    msgs = build_messages("RDB是什么", CTX, [])
+    assert msgs[0]["content"] == SYSTEM_PROMPT
+    assert "[资料1]" in msgs[1]["content"]
