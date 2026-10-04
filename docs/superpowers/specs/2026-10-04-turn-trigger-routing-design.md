@@ -83,6 +83,8 @@ def classify_turn(text: str) -> str:
 REF_DIST_MAX = 1.05   # L2（单位向量）⇔ cos ≥ 0.45；彩排模式校准
 ```
 
+（2026-10-05 终审裁决：彩排校准载体随彩排删除失效，1.05 为未实测默认；校准方式=真实录音跑 trigger 观察 notice 分布，入口 RagService.REF_DIST_MAX。）
+
 - `statement` → 不检索；
 - 其他 → `retrieve(k=5)`；
 - `use_refs = bool(contexts)` 且满足其一：

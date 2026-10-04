@@ -104,7 +104,8 @@ class MainWindow(QMainWindow):
             btn.setChecked(k == key)
         self._stack.setCurrentWidget(self._pages[key][1])
         if key == "settings":
-            self.settings_page.refresh_models_state()
+            self.settings_page.refresh_models_state(
+                downloading=self._dl_worker is not None and self._dl_worker.isRunning())
 
     def open_settings(self) -> None:
         self.show()
@@ -166,6 +167,9 @@ class MainWindow(QMainWindow):
         line.setObjectName("hline")
         line.setFixedHeight(1)
         lay.addWidget(line)
+        self.kb_empty = QLabel("暂无文件 —— 上传 markdown 开始构建知识库")
+        self.kb_empty.setObjectName("hint")
+        lay.addWidget(self.kb_empty)
         self.kb_table = QTableView()
         self.kb_model = QStandardItemModel(0, 2)
         self.kb_model.setHorizontalHeaderLabels(["文件", "块数"])
@@ -189,6 +193,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "kb_count"):
             blocks = sum(n for _, n in files)
             self.kb_count.setText(f"{len(files)} 文件 · {blocks} 块")
+        self.kb_empty.setVisible(not files)   # 空态提示；表格保持（不隐藏）
         self._refresh_status_info()
 
     def _upload(self) -> None:

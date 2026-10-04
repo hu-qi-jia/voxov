@@ -60,6 +60,15 @@ def test_kb_table_lists_files_and_row_selection(win):
     assert not w.kb_table.editTriggers()
 
 
+def test_kb_empty_state_hint(win):
+    w, _ = win
+    w.show(); w.switch_page("kb"); w._reload_kb()
+    kb = w._kb_factory()
+    kb.files.clear()
+    w._reload_kb()
+    assert not w.kb_empty.isHidden()
+
+
 def test_delete_selected_file(win):
     w, _ = win
     w.kb_table.selectRow(0)

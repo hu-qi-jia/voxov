@@ -50,3 +50,10 @@ def test_chatter_words_do_not_kill_short_tech_sentence():
 
 def test_long_statement_falls_through():
     assert classify_turn("我们这个团队这两年一直在做云端协同方向的产品落地") == "statement"
+
+def test_leading_chatter_does_not_swallow_real_question():
+    assert classify_turn("好的那你讲讲Redis持久化") == "question"
+    assert classify_turn("行，那你介绍一下TCP") == "question"
+
+def test_single_char_chatter_words_do_not_substring_shave():
+    assert classify_turn("我们继续运行下去") == "question"

@@ -131,7 +131,10 @@ class SettingsPage(QWidget):
         return True
 
     # ---- 下载状态（worker 由主窗持有，页面只展示） ----
-    def refresh_models_state(self) -> None:
+    def refresh_models_state(self, downloading: bool = False) -> None:
+        if downloading:                        # 下载中切回设置页：不得重置进度 UI
+            self.on_dl_started()
+            return
         ok = models_ready(self.cfg.models_dir)
         self.model_state.setText("已就绪 · sherpa-onnx + bge" if ok else "未下载")
         self.dl_btn.setText(" 重新下载" if ok else " 下载模型")
@@ -147,6 +150,7 @@ class SettingsPage(QWidget):
         self.dl_log.show()
 
     def on_dl_progress(self, p: float) -> None:
+        self.progress.show()
         self.progress.setValue(int(p * 100))
 
     def on_dl_line(self, m: str) -> None:

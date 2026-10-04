@@ -63,3 +63,10 @@ def test_dl_progress_and_ok_flow(qtbot, tmp_path, monkeypatch):
     p.on_dl_ok()
     assert "已就绪" in p.model_state.text()
     assert p.progress.isHidden()
+
+def test_refresh_preserves_downloading_state(qtbot, tmp_path, monkeypatch):
+    p, _, _ = _page(qtbot, tmp_path, monkeypatch)
+    p.on_dl_started()
+    p.refresh_models_state(downloading=True)
+    assert not p.dl_btn.isEnabled()
+    assert not p.progress.isHidden()

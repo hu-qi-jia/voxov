@@ -24,7 +24,7 @@ def _fts_exact_hit(query: str, contexts: list) -> bool:
 class RagService:
     """热键/自动触发的完整编排：提取话轮 → 分类 → 检索路由 → 流式生成 → 记录。"""
 
-    REF_DIST_MAX = 1.05   # sqlite-vec L2（单位向量）⇔ cos≥约0.45；实测后可调
+    REF_DIST_MAX = 1.05   # sqlite-vec L2（单位向量）⇔ cos≥约0.45。未实测默认值：调参入口在此，用真实面试录音跑 trigger 观察 notice 分布校准（过松=偶发注入弱资料=回退旧行为；过紧=靠 FTS 越过兜底）。
 
     def __init__(self, retriever: Retriever, llm: LLMClient,
                  recorder: SessionRecorder | None = None) -> None:
