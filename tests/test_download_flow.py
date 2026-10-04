@@ -1,76 +1,10 @@
-# tests/test_download_flow.py —— 开箱即用下载链路：DownloadWorker / 向导 / 首启自动下载 / 监听门禁
-import time
-
+# tests/test_download_flow.py —— 开箱即用下载链路：DownloadWorker / 首启自动下载（设置页）/ 监听门禁
 import pytest
 
 import core.downloader as dl
 
 
-# --- 向导：打开即自动下载（开箱即用），异常可见、可重试 ---
-def _mk_wizard_env(qtbot, monkeypatch, behavior):
-    """starter 提供共享 DownloadWorker；behavior: 'ok' | 'fail' | 'slow'。"""
-    from app.workers import DownloadWorker
-
-    calls = {"n": 0}
-
-    def fake_ensure(md, log):
-        calls["n"] += 1
-        if behavior == "fail" and calls["n"] == 1:
-            raise RuntimeError("网络错误")
-        log("[开始下载] iic/SenseVoiceSmall")
-        if behavior == "slow":
-            time.sleep(0.4)
-        log("[完成] SenseVoiceSmall")
-
-    monkeypatch.setattr(dl, "ensure_models", fake_ensure)
-    holder = {"w": None}
-
-    def starter():
-        w = DownloadWorker(models_dir=None)
-        holder["w"] = w
-        w.start()
-        return w
-
-    from app.wizard import ModelWizard
-    wiz = ModelWizard(starter)
-    qtbot.addWidget(wiz)
-    return wiz, holder, calls
-
-
-def test_wizard_auto_starts_download_without_click(qtbot, monkeypatch):
-    wiz, holder, calls = _mk_wizard_env(qtbot, monkeypatch, "ok")
-    qtbot.waitUntil(lambda: "[完成]" in wiz.log_view.toPlainText(), timeout=3000)
-    assert calls["n"] == 1                       # 未点任何按钮，下载已发生
-    assert not wiz.retry_btn.isEnabled()         # 下载中重试按钮禁用
-
-
-def test_wizard_failure_shows_error_and_enables_retry(qtbot, monkeypatch):
-    wiz, holder, calls = _mk_wizard_env(qtbot, monkeypatch, "fail")
-    qtbot.waitUntil(lambda: "下载失败" in wiz.log_view.toPlainText(), timeout=3000)
-    assert "网络错误" in wiz.log_view.toPlainText()   # 错误必须可见（Bug 1）
-    assert wiz.retry_btn.isEnabled()
-    wiz.retry_btn.click()                        # 重试 = 断点续传
-    qtbot.waitUntil(lambda: calls["n"] == 2, timeout=3000)
-    qtbot.waitUntil(lambda: "[完成]" in wiz.log_view.toPlainText(), timeout=3000)
-
-
-def test_wizard_success_message(qtbot, monkeypatch):
-    wiz, holder, calls = _mk_wizard_env(qtbot, monkeypatch, "ok")
-    qtbot.waitUntil(lambda: "全部完成" in wiz.log_view.toPlainText(), timeout=3000)
-
-
-def test_wizard_heartbeat_label(qtbot, monkeypatch):
-    wiz, holder, calls = _mk_wizard_env(qtbot, monkeypatch, "slow")
-    qtbot.waitUntil(lambda: "[开始下载]" in wiz.log_view.toPlainText(), timeout=3000)
-    wiz._tick_heartbeat()
-    assert "下载中" in wiz.heart_label.text()
-    # 收尾必须等线程结束、信号送达——否则悬空投递+活动线程拖到解释器
-    # 退出期，PySide6 硬崩（exit 127），且毒化同一进程内后续所有退出。
-    qtbot.waitUntil(lambda: "全部完成" in wiz.log_view.toPlainText(), timeout=3000)
-    holder["w"].wait(3000)
-
-
-# --- 首启自动下载（开箱即用）：不弹窗，后台下载 + 状态灯 ---
+# --- 首启自动下载（开箱即用）：不弹窗，后台下载 + 状态行/设置页 ---
 class _Rag:
     def __init__(self):
         from core.session import SessionBuffer, SessionRecorder
@@ -109,9 +43,9 @@ def test_auto_download_starts_when_models_missing(win, qtbot, monkeypatch):
     monkeypatch.setattr(dl, "ensure_models", _fake_ensure("ok"))
     win.maybe_auto_download()
     assert win._dl_worker is not None
-    qtbot.waitUntil(lambda: "下载中" in win.model_status_label.text(), timeout=3000)
+    qtbot.waitUntil(lambda: not win.settings_page.dl_btn.isEnabled(), timeout=3000)  # 下载中
     # 等 finished_ok 送达（事件循环），不留未投递信号/活动定时器给拆除期
-    qtbot.waitUntil(lambda: "就绪" in win.model_status_label.text(), timeout=3000)
+    qtbot.waitUntil(lambda: "模型已就绪" in win.status_msg.text(), timeout=3000)
 
 
 def test_auto_download_skips_when_models_ready(win, qtbot):
@@ -126,31 +60,18 @@ def test_auto_download_skips_when_models_ready(win, qtbot):
 
 def test_auto_download_failure_marks_state(win, qtbot, monkeypatch):
     monkeypatch.setattr(dl, "ensure_models", _fake_ensure("fail"))
-    infos = []
-    monkeypatch.setattr(win, "_info", lambda *a, **k: infos.append(a))
     win.maybe_auto_download()
     qtbot.waitUntil(lambda: "下载失败" in win.model_status_label.text(), timeout=3000)
-    assert any(a and a[0] == "error" for a in infos)   # 错误以 InfoBar 浮出
+    qtbot.waitUntil(lambda: "下载失败" in win.status_msg.text(), timeout=3000)  # 错误浮出状态行
 
 
 def test_auto_download_ok_prompts_restart_when_embedder_fell_back(win, qtbot, monkeypatch):
     monkeypatch.setattr(dl, "ensure_models", _fake_ensure("ok"))
     win._started_without_models = True
-    infos = []
-    monkeypatch.setattr(win, "_info", lambda *a, **k: infos.append(a))
     win.maybe_auto_download()
     qtbot.waitUntil(lambda: win._dl_worker is not None and not win._dl_worker.isRunning(),
                     timeout=3000)
-    qtbot.waitUntil(lambda: "就绪" in win.model_status_label.text(), timeout=3000)
-    assert any(a and a[0] == "ok" and "重启" in a[2] for a in infos)
-
-
-def test_dl_heartbeat_ticks_elapsed(win, qtbot, monkeypatch):
-    monkeypatch.setattr(dl, "ensure_models", _fake_ensure("ok"))
-    win.maybe_auto_download()
-    win._tick_dl_heartbeat()
-    assert "已" in win.model_status_label.text() and "s" in win.model_status_label.text()
-    qtbot.waitUntil(lambda: "就绪" in win.model_status_label.text(), timeout=3000)
+    qtbot.waitUntil(lambda: "重启" in win.status_msg.text(), timeout=3000)
 
 
 # --- DownloadWorker：异常必须浮出为 failed 信号（Bug 1 根因 M6） ---
@@ -228,16 +149,20 @@ def test_load_worker_loaded_and_failed(qtbot, monkeypatch):
 def test_start_listening_gated_when_models_missing(win, qtbot, monkeypatch):
     import core.transcriber as tr
     monkeypatch.setattr(dl, "models_ready", lambda md: False)
+    monkeypatch.setattr(dl, "ensure_models", _fake_ensure("ok"))  # 门禁会顺手触发下载，勿真连网
 
     def boom(md):
         raise AssertionError("门禁未生效：不应构造转写器")
 
     monkeypatch.setattr(tr, "SherpaTranscriber", boom)
     opened = []
-    win._open_wizard = lambda: opened.append(1)
+    win.open_settings = lambda: opened.append(1)
     win.start_listening()
     assert win._pipeline is None
     assert opened == [1]
+    # 收尾等下载线程终态（新门禁路径会启动后台下载）
+    qtbot.waitUntil(lambda: win._dl_worker is not None and not win._dl_worker.isRunning(),
+                    timeout=3000)
 
 
 def _patch_av(monkeypatch, transcriber_text="x"):
@@ -280,23 +205,12 @@ def test_start_listening_loads_async_and_passes_device(win, qtbot, monkeypatch):
 def test_start_listening_load_failure_surfaces(win, qtbot, monkeypatch):
     import core.transcriber as tr
     monkeypatch.setattr(dl, "models_ready", lambda md: True)
-    infos = []
-    monkeypatch.setattr(win, "_info", lambda *a, **k: infos.append(a))
     monkeypatch.setattr(tr, "SherpaTranscriber",
                         lambda md: (_ for _ in ()).throw(RuntimeError("模型损坏")))
     win.start_listening()
     qtbot.waitUntil(lambda: win.start_btn.isEnabled(), timeout=5000)   # 失败后可重试
     assert win._pipeline is None
-    assert any(a and a[0] == "error" and "模型损坏" in a[2] for a in infos)
-
-
-def test_rehearsal_also_gated_when_models_missing(win, qtbot, monkeypatch, tmp_path):
-    monkeypatch.setattr(dl, "models_ready", lambda md: False)
-    opened = []
-    win._open_wizard = lambda: opened.append(1)
-    win.start_rehearsal(tmp_path / "x.wav")
-    assert win._pipeline is None
-    assert opened == [1]
+    assert "启动失败" in win.status_msg.text() and "模型损坏" in win.status_msg.text()
 
 
 # --- 非 ASCII 模型路径：sentencepiece/torch 的 C++ 层打不开中文路径 ---
@@ -357,4 +271,3 @@ def test_single_instance_second_launch_refuses(tmp_path):
     release_single_instance()
     assert acquire_single_instance(tmp_path)   # 释放后可再取
     release_single_instance()
-

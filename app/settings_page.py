@@ -21,6 +21,7 @@ def _sep() -> QFrame:
 
 class SettingsPage(QWidget):
     download_requested = Signal()
+    saved = Signal()
 
     def __init__(self, cfg: AppConfig, set_status, parent=None) -> None:
         super().__init__(parent)
@@ -105,6 +106,7 @@ class SettingsPage(QWidget):
     # ---- 保存 ----
     def _on_save_clicked(self) -> None:
         if self.save():
+            self.saved.emit()
             self._set_status("设置已保存", "ok")
 
     def save(self) -> bool:

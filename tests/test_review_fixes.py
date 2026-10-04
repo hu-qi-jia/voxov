@@ -1,9 +1,10 @@
-# tests/test_review_fixes.py —— 最终审查修复轮（C3/I1/I2/I3/I4/I7拆分/I10/I12）
+# tests/test_review_fixes.py —— 最终审查修复轮（C3/I1/I2/I12）。
+# _apply_settings/rebind_hotkeys 已恢复于主窗（审查前修正轮），锚点测试在
+# tests/test_main_window.py；热键保存校验由 SettingsPage 承担（tests/test_settings_page.py）；
+# 彩排（I7）整体移除。
 import time
 
-import numpy as np
 import pytest
-import wave as _wave
 
 from app.main_window import MainWindow
 
@@ -33,14 +34,6 @@ def win(qtbot, tmp_path, monkeypatch):
     w = MainWindow(default_config(), kb_factory=lambda: _Kb(), rag_factory=lambda: rag)
     qtbot.addWidget(w)
     return w, rag
-
-
-def _wav1s(tmp_path):
-    p = tmp_path / "r.wav"
-    with _wave.open(str(p), "wb") as f:
-        f.setnchannels(1); f.setsampwidth(2); f.setframerate(16000)
-        f.writeframes((np.ones(16000) * 4000).astype(np.int16).tobytes())
-    return p
 
 
 # --- C3：急隐藏必须藏主窗口 ---
@@ -92,91 +85,20 @@ def test_quit_app_stops_everything_and_quits(win, qtbot):
     assert quits == [1]
 
 
-# --- I3a：设置保存后重建 LLM 客户端（首配 key 即刻生效） ---
-class _Sig:
-    def connect(self, *a): pass
-
-def test_settings_apply_rebuilds_llm_client(win, qtbot, monkeypatch):
-    w, rag = win
-    import app.hotkey as hk
-    class _FB:
-        def __init__(self, c, h):
-            self.pressed = _Sig()
-            self.hidden = _Sig()
-        def stop(self): pass
-    monkeypatch.setattr(hk, "HotkeyBridge", _FB)
-    w._on_hotkey()  # 创建 _rag
-    w.cfg.llm_base_url = "https://new.example/v1"
-    w.cfg.llm_api_key = "k"
-    w.cfg.llm_model = "m9"
-    w._apply_settings()
-    assert w._rag.llm.base_url == "https://new.example/v1"
-    assert w._rag.llm.model == "m9"
+# --- I3a/I3c：_apply_settings/rebind_hotkeys 锚点测试在 tests/test_main_window.py；
+#     I4 的保存校验由 SettingsPage 承担（tests/test_settings_page.py）---
+def test_settings_page_rejects_invalid_hotkey(win, qtbot):
+    w, _ = win
+    before = w.cfg.hotkey
+    w.settings_page.hotkey_edit.setText("bad!!")
+    assert w.settings_page.save() is False   # 拒绝保存
+    assert w.cfg.hotkey == before            # 未生效
 
 
 # --- I3b：音频设备设置必须传到 LiveAudioSource（异步版见 test_download_flow.py）---
 
 
-# --- I3c + I4：热键改后即重绑；非法热键被拒绝/回退 ---
-def test_rebind_hotkeys_recreates_and_falls_back(win, qtbot, monkeypatch):
-    w, _ = win
-    import app.hotkey as hk
-    made = []
-    class _FB:
-        def __init__(self, c, h):
-            if c == "bad!!":
-                raise ValueError("bad combo")
-            made.append((c, h))
-            self.pressed = _Sig()
-            self.hidden = _Sig()
-        def stop(self): made.append("stop")
-    monkeypatch.setattr(hk, "HotkeyBridge", _FB)
-    old = _FB("old", "old2")
-    w.bridge = old
-    w.cfg.hotkey = "ctrl+alt+q"
-    w.rebind_hotkeys()
-    assert ("ctrl+alt+q", "ctrl+alt+h") in made
-    assert "stop" in made and w.bridge is not old
-    w.cfg.hotkey = "bad!!"
-    w.rebind_hotkeys()
-    assert made[-1] == ("ctrl+alt+space", "ctrl+alt+h")  # 回退默认，不崩溃
-
-
-def test_settings_rejects_invalid_hotkey(win, qtbot, monkeypatch):
-    from PySide6.QtWidgets import QMessageBox
-    from app.settings_dialog import SettingsDialog
-    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: None))
-    w, _ = win
-    before = w.cfg.hotkey
-    dlg = SettingsDialog(w.cfg, parent=w)
-    dlg.hotkey_edit.setText("bad!!")
-    dlg._save()
-    assert w.cfg.hotkey == before      # 未生效
-    assert not dlg.result()            # 未 accept
-
-
-# --- I7：彩排用独立 rag/recorder，热键走当前活跃会话 ---
-def test_rehearsal_uses_dedicated_rag_and_hotkey_follows(win, qtbot, tmp_path, monkeypatch):
-    w, live = win
-    rehearse = _Rag()
-    w._rehearsal_rag_factory = lambda: rehearse
-    import core.transcriber as tr
-    import core.downloader as dl
-    class _FT:
-        def transcribe(self, pcm, sample_rate=16000): return "彩排"
-    monkeypatch.setattr(tr, "SherpaTranscriber", lambda md: _FT())
-    monkeypatch.setattr(dl, "models_ready", lambda md: True)
-    w.start_rehearsal(_wav1s(tmp_path))
-    assert w._rehearsal_rag is rehearse
-    assert w._active_rag() is rehearse
-    qtbot.waitUntil(lambda: w._pipeline is not None, timeout=5000)
-    qtbot.waitUntil(lambda: len(rehearse.buffer.entries) == 1, timeout=15000)
-    w._pipeline.stop()
-    w._pipeline = None
-    w._on_hotkey()
-    qtbot.waitUntil(lambda: rehearse.triggered == 1, timeout=3000)
-    assert live.triggered == 0
-
+# --- I7：彩排已整体移除（retro 壳）——无 start_rehearsal/_rehearsal_rag_factory ---
 
 # --- I10：首启缺模型引导 → 已升级为后台自动下载（tests/test_download_flow.py）---
 
