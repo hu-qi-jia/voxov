@@ -20,8 +20,8 @@ def build_app():
     from core.generator import LLMClient
     from core.retriever import Retriever
     from core.session import SessionRecorder
-    from app.main_window import models_ready
-    models_ok = models_ready(cfg)
+    from core.downloader import models_ready
+    models_ok = models_ready(cfg.models_dir)
     embedder = BgeEmbedder(cfg.models_dir / "bge-small-zh-v1.5") if models_ok else HashEmbedder()
     kb = KnowledgeBase(cfg.kb_path, embedder)
     llm = LLMClient(cfg.llm_base_url, cfg.llm_api_key, cfg.llm_model)

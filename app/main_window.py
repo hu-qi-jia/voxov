@@ -1,6 +1,6 @@
 # app/main_window.py（核心逻辑；样式从简）
 from pathlib import Path
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QStandardItemModel, QStandardItem
 from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel,
                                QMainWindow, QPushButton, QTableView, QVBoxLayout, QWidget)
@@ -8,12 +8,11 @@ from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel,
 from app.overlay import OverlayWindow
 
 
-def models_ready(cfg) -> bool:
-    """本地模型是否就绪（Task 17 向导按此判断是否引导下载）。"""
-    return (cfg.models_dir / "SenseVoiceSmall").exists()
-
-
 class MainWindow(QMainWindow):
+    # 管线线程 emit → 队列连接回主线程（与 HotkeyBridge 同模式）
+    subtitle_sig = Signal(str)
+    audio_error_sig = Signal(str)
+
     def __init__(self, cfg, kb_factory, rag_factory) -> None:
         super().__init__()
         self.cfg = cfg
@@ -22,6 +21,9 @@ class MainWindow(QMainWindow):
         self._rag = None
         self._recorder = None  # main.py 注入；未注入时导出按钮禁用逻辑依赖它
         self.overlay = OverlayWindow()
+        self.subtitle_sig.connect(lambda t: self.overlay.set_subtitle(t))
+        self.audio_error_sig.connect(
+            lambda m: self.overlay.show_status(f"音频异常：{m}，请重新开始监听"))
         self._worker = None
         self._pipeline = None
         self.tray = None      # main.py 注入（急隐藏需要同时藏托盘）
@@ -51,9 +53,14 @@ class MainWindow(QMainWindow):
         start_btn = QPushButton("监听")
         start_btn.setProperty("accent", True)
         start_btn.clicked.connect(self.start_listening)
+        self.rehearse_btn = QPushButton("彩排")
+        self.rehearse_btn.clicked.connect(self._rehearse_clicked)
+        wizard_btn = QPushButton("下载模型")
+        wizard_btn.clicked.connect(self._open_wizard)
         settings_btn = QPushButton("设置")
         settings_btn.clicked.connect(self._open_settings)
-        for b in (upload_btn, del_btn, export_btn, start_btn, settings_btn):
+        for b in (upload_btn, del_btn, export_btn, start_btn,
+                  self.rehearse_btn, wizard_btn, settings_btn):
             row.addWidget(b)
         lay.addLayout(row)
         self.setCentralWidget(central)
@@ -87,6 +94,10 @@ class MainWindow(QMainWindow):
         if dlg.exec():
             self.statusBar().showMessage("已保存")
 
+    def _open_wizard(self) -> None:
+        from app.wizard import ModelWizard
+        ModelWizard(self.cfg, parent=self).exec()
+
     def _on_hide(self) -> None:
         """急隐藏（spec §6.5）：悬浮窗+托盘同时隐/显，再按一次恢复。"""
         self._hidden = not self._hidden
@@ -103,9 +114,48 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"已导出 {p}")
 
     def start_listening(self) -> None:
-        """Task 16 内先用 wav/无源方式跳过；完整接线在集成步（见 Step 4）。"""
+        from core.capture import LiveAudioSource
+        from core.pipeline import AudioPipeline
+        from core.transcriber import FunasrTranscriber
+        if self._pipeline is not None:
+            self._pipeline.stop()
+            self._pipeline = None
+            self.statusBar().showMessage("已停止监听")
+            return
+        transcriber = FunasrTranscriber(self.cfg.models_dir)
+        source = LiveAudioSource()
+        self._rag = self._rag or self._rag_factory()
+        self._pipeline = AudioPipeline(source, transcriber, self._rag.buffer, recorder=self._recorder)
+        self._pipeline.on_subtitle = self.subtitle_sig.emit  # 管线线程安全 emit
+        self._pipeline.on_error = self.audio_error_sig.emit
+        self._pipeline.start()
         self.overlay.show()
-        self.statusBar().showMessage("悬浮窗已显示")
+        self.statusBar().showMessage("监听中：系统音频 → 字幕；Ctrl+Alt+Space 触发回答")
+
+    def _rehearse_clicked(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+        from pathlib import Path as P
+        path, _ = QFileDialog.getOpenFileName(self, "选择录音", "", "Wave (*.wav)")
+        if path:
+            self.start_rehearsal(P(path))
+
+    def start_rehearsal(self, wav_path) -> None:
+        """彩排模式（spec §5④）：wav 按真实时长回放，链路与监听完全一致，
+        不接真实设备——首次真实面试前用它全链路验证。"""
+        from core.capture import WavFileSource
+        from core.pipeline import AudioPipeline
+        from core.transcriber import FunasrTranscriber
+        if self._pipeline is not None:
+            self._pipeline.stop()
+        transcriber = FunasrTranscriber(self.cfg.models_dir)
+        self._rag = self._rag or self._rag_factory()
+        self._pipeline = AudioPipeline(WavFileSource(wav_path), transcriber,
+                                       self._rag.buffer, recorder=self._recorder)
+        self._pipeline.on_subtitle = self.subtitle_sig.emit
+        self._pipeline.on_error = self.audio_error_sig.emit
+        self._pipeline.start()
+        self.overlay.show()
+        self.statusBar().showMessage("彩排中")
 
     # --- 热键→生成 ---
     def _on_hotkey(self) -> None:
