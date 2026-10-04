@@ -1,2 +1,0 @@
-{"type": "transcript", "ts": 1.0, "end_ts": 2.0, "text": "介绍Redis"}
-{"type": "qa", "question": "介绍Redis", "sources": [], "answer": "**RDB** 是快照。", "ts": 1791122748.0117948}
