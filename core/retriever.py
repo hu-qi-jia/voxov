@@ -27,14 +27,24 @@ class Retriever:
     def __init__(self, kb: KnowledgeBase, embedder: Embedder) -> None:
         self.kb = kb
         self.embedder = embedder
+        self.last_top_distance: float | None = None
+
+    @property
+    def distances_reliable(self) -> bool:
+        from core.embedder import OnnxEmbedder
+        return isinstance(self.embedder, OnnxEmbedder)
 
     def retrieve(self, query: str, k: int = 5) -> list[Retrieved]:
         query = query.strip()
+        self.last_top_distance = None
         if not query:
             return []
         vec = self.embedder.encode_query(query)
+        vec_hits = self.kb.vector_search(vec, k=k)          # [(cid, L2 dist)]
+        if vec_hits:
+            self.last_top_distance = min(d for _, d in vec_hits)
         rankings = [
-            [cid for cid, _ in self.kb.vector_search(vec, k=k)],
+            [cid for cid, _ in vec_hits],
             self.kb.fts_search(query, k=k),
         ]
         fused = rrf_fuse([r for r in rankings if r], k=60)[:k]

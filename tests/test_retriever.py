@@ -59,3 +59,30 @@ def test_retrieve_english_term(tmp_path):
     r = Retriever(_kb(tmp_path), HashEmbedder(dim=512))
     out = r.retrieve("BGSAVE 命令", k=3)
     assert any("BGSAVE" in x.text for x in out)
+
+# --- 路由信号：真距离 + 可靠性 ---
+def test_distances_unreliable_with_hash_embedder(tmp_path):
+    r = Retriever(_kb(tmp_path), HashEmbedder(dim=512))
+    assert r.distances_reliable is False
+
+def test_distances_reliable_with_onnx_embedder(tmp_path):
+    from core.embedder import OnnxEmbedder
+    r = Retriever(_kb(tmp_path), OnnxEmbedder.__new__(OnnxEmbedder))  # 仅测 isinstance
+    assert r.distances_reliable is True
+
+def test_last_top_distance_populated_and_reset(tmp_path):
+    r = Retriever(_kb(tmp_path), HashEmbedder(dim=512))
+    r.retrieve("MVCC 是什么", k=3)
+    assert isinstance(r.last_top_distance, float)
+    assert r.last_top_distance >= 0.0
+    r.retrieve("这是一个完全无关的查询单独", k=3)   # 有结果
+    # 有结果的查询不抛错即可
+    r.retrieve("", k=3)                              # 空查询必须重置
+    assert r.last_top_distance is None
+
+def test_last_top_distance_none_on_empty_kb(tmp_path):
+    from core.kb import KnowledgeBase
+    r = Retriever(KnowledgeBase(tmp_path / "e.db", HashEmbedder(dim=512)),
+                  HashEmbedder(dim=512))
+    r.retrieve("任何问题", k=5)
+    assert r.last_top_distance is None
