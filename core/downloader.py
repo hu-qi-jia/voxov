@@ -12,7 +12,17 @@ HF_REPOS = {"bge-small-zh-v1.5": "BAAI/bge-small-zh-v1.5"}
 
 
 def models_ready(models_dir: Path) -> bool:
-    return all((models_dir / name).exists() for name in [*MS_REPOS, *HF_REPOS])
+    """就绪 = 四个仓库都存在且非空，且没有任何未完成临时文件。
+    下载一开始 local_dir 就已创建——只查目录存在会把"下载中"误报成就绪。"""
+    names = [*MS_REPOS, *HF_REPOS]
+    if not all((models_dir / name).is_dir() for name in names):
+        return False
+    if not all(any((models_dir / name).iterdir()) for name in names):
+        return False
+    for p in models_dir.rglob("*"):
+        if p.suffix in (".incomplete", ".parallel_tmp"):
+            return False
+    return True
 
 
 def _download_modelscope(repo: str, dest: Path, log: Callable[[str], None]) -> None:

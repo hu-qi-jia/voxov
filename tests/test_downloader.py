@@ -6,6 +6,7 @@ def test_models_ready_false_then_true(tmp_path, monkeypatch):
     assert downloader.models_ready(tmp_path) is False
     for sub in ("SenseVoiceSmall", "fsmn-vad", "ct-punc", "bge-small-zh-v1.5"):
         (tmp_path / sub).mkdir(parents=True, exist_ok=True)
+        (tmp_path / sub / "model.bin").write_bytes(b"x")  # 有实质文件才算完成
     assert downloader.models_ready(tmp_path) is True
 
 def test_ensure_models_downloads_all(tmp_path, monkeypatch):

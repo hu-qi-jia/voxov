@@ -117,6 +117,7 @@ def test_auto_download_starts_when_models_missing(win, qtbot, monkeypatch):
 def test_auto_download_skips_when_models_ready(win, qtbot):
     for sub in ("SenseVoiceSmall", "fsmn-vad", "ct-punc", "bge-small-zh-v1.5"):
         (win.cfg.models_dir / sub).mkdir(parents=True, exist_ok=True)
+        (win.cfg.models_dir / sub / "model.bin").write_bytes(b"x")  # 模拟下载完成
     win.maybe_auto_download()
     assert win._dl_worker is None
     assert "就绪" in win.model_status_label.text()
@@ -323,6 +324,69 @@ def test_modelscope_home_relocated(monkeypatch, tmp_path):
     monkeypatch.delenv("MODELSCOPE_HOME", raising=False)
     dl._download_modelscope("iic/x", tmp_path / "m" / "SenseVoiceSmall", lambda m: None)
     assert captured["home"] == str(tmp_path / "m" / "_cache" / "modelscope_home")
+
+
+def test_models_ready_requires_complete_download(tmp_path):
+    md = tmp_path / "models"
+    for sub in ("SenseVoiceSmall", "fsmn-vad", "ct-punc", "bge-small-zh-v1.5"):
+        (md / sub).mkdir(parents=True)
+    assert not dl.models_ready(md)            # 空仓库 = 下载刚起步，未就绪
+    (md / "SenseVoiceSmall" / "model.pt").write_bytes(b"x")
+    assert not dl.models_ready(md)            # 其他仓库仍空
+    for sub in ("fsmn-vad", "ct-punc", "bge-small-zh-v1.5"):
+        (md / sub / "model.bin").write_bytes(b"x")
+    assert dl.models_ready(md)                # 全部有实质文件 → 就绪
+    (md / "fsmn-vad" / "model.bin.incomplete").write_bytes(b"x")
+    assert not dl.models_ready(md)            # 存在未完成临时文件 → 仍在下载
+    (md / "fsmn-vad" / "model.bin.parallel_tmp").write_bytes(b"x")
+    assert not dl.models_ready(md)
+
+
+# --- 非 ASCII 模型路径：sentencepiece/torch 的 C++ 层打不开中文路径 ---
+def test_ascii_model_path_passthrough(tmp_path):
+    from core.paths import ascii_model_path
+    assert ascii_model_path(tmp_path) == tmp_path
+
+
+def test_ascii_model_path_junction_for_non_ascii(tmp_path):
+    from core.paths import ascii_model_path
+    target = tmp_path / "中文模型"
+    target.mkdir()
+    (target / "f.txt").write_text("x", encoding="utf-8")
+    link = ascii_model_path(target)
+    if str(link).isascii():
+        assert (link / "f.txt").exists()          # junction 生效可读
+        link.rmdir()                              # 清理 junction 本身
+    else:
+        assert link == target                     # 系统不允许时优雅降级
+
+
+def test_sentencepiece_patch_falls_back_to_serialized(monkeypatch, tmp_path):
+    import sys
+    import types
+    calls = []
+
+    class SPP:
+        def Load(self, f):
+            calls.append(("Load", str(f)))
+            raise RuntimeError("NOT_FOUND")
+
+        load = Load                       # sentencepiece 的小写别名（funasr 走它）
+
+        def LoadFromSerializedProto(self, data):
+            calls.append(("proto", len(data)))
+            return True
+
+    spm = types.ModuleType("sentencepiece")
+    spm.SentencePieceProcessor = SPP
+    monkeypatch.setitem(sys.modules, "sentencepiece", spm)
+    from core.paths import patch_sentencepiece_unicode
+    patch_sentencepiece_unicode()
+    f = tmp_path / "tok.model"
+    f.write_bytes(b"abc")
+    SPP().load(str(f))                     # funasr 调的是小写 load
+    assert ("proto", 3) in calls           # Python 读字节 → 序列化注入
+    assert SPP._notes_unicode_patch is True
 
 
 def test_single_instance_second_launch_refuses(tmp_path):

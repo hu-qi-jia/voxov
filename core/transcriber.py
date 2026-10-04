@@ -27,6 +27,9 @@ class FunasrTranscriber:
     """FunASR：SenseVoice-Small + fsmn-vad + ct-punc，全部本地加载（spec §3）。"""
 
     def __init__(self, models_dir: Path) -> None:
+        from core.paths import ascii_model_path, patch_sentencepiece_unicode
+        models_dir = ascii_model_path(models_dir)   # C++ 层打不开中文路径
+        patch_sentencepiece_unicode()               # 兜底：字节注入绕开路径层
         from funasr import AutoModel
         self.asr = AutoModel(
             model=str(models_dir / "SenseVoiceSmall"),

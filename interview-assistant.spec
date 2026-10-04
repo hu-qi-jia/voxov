@@ -6,9 +6,13 @@
 from PyInstaller.utils.hooks import (collect_dynamic_libs, collect_submodules,
                                      collect_data_files, copy_metadata)
 
+# funasr/register.py 对每个注册类 inspect.getsourcelines —— 冻结环境无源码即抛
+# OSError("could not get source code")。把 .py 一并打进 _internal/funasr/（与模块
+# __file__ 一致），inspect 即可读到。
 datas = [("assets", "assets")] \
     + collect_data_files("modelscope") \
     + collect_data_files("funasr") \
+    + collect_data_files("funasr", include_py_files=True) \
     + copy_metadata("modelscope") \
     + copy_metadata("funasr") \
     + copy_metadata("huggingface_hub")
