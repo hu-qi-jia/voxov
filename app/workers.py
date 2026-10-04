@@ -90,8 +90,9 @@ class GenerateWorker(QThread):
                     self.chunk.emit(delta)
             if not got_question:
                 self.question.emit("")
-            if got_question and getattr(self.rag, "last_had_refs", True) is False:
-                self.notice.emit("通用回答（知识库无命中）")
+            notice = getattr(self.rag, "last_notice", "")
+            if got_question and notice:
+                self.notice.emit(notice)
             self.done.emit()
         except Exception as exc:
             self.failed.emit(str(exc))

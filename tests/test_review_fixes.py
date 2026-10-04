@@ -200,11 +200,11 @@ def test_rag_tracks_whether_refs_found(tmp_path):
         assert s.last_had_refs is expect
 
 
-def test_worker_notice_when_no_refs(qtbot):
+def test_worker_notice_passthrough(qtbot):
     from app.workers import GenerateWorker
     class _R:
         last_question = "q"
-        last_had_refs = False
+        last_notice = "通用回答（知识库无命中）"
         def trigger(self):
             yield "a"
     wk = GenerateWorker(_R())
@@ -216,9 +216,9 @@ def test_worker_notice_when_no_refs(qtbot):
     qtbot.waitUntil(lambda: got == ["通用回答（知识库无命中）"], timeout=3000)
 
 
-def test_generic_answer_notice_shown_in_overlay(win, qtbot):
+def test_generic_answer_notice_shown_in_chat(win, qtbot):
     w, rag = win
-    rag.last_had_refs = False
+    rag.last_notice = "开放题 · 未用资料"
     w._on_hotkey()
     qtbot.waitUntil(lambda: w._chat_answer is not None
-                    and "通用回答" in w._chat_answer.note.text(), timeout=3000)
+                    and "开放题" in w._chat_answer.note.text(), timeout=3000)

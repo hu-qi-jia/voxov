@@ -36,9 +36,9 @@ class SessionBuffer:
             self._entries = []
 
 
-def extract_question(entries: list[TranscriptEntry], now: float,
-                     min_pause: float = 1.5, max_window: float = 30.0) -> str:
-    """spec §6.4：从当前回溯找 ≥min_pause 的段间停顿，取其后全部文本。"""
+def extract_turn(entries: list[TranscriptEntry], now: float,
+                 min_pause: float = 1.5, max_window: float = 30.0) -> str:
+    """spec §6.4：从当前回溯找 ≥min_pause 的段间停顿，取其后全部话轮文本。"""
     entries = [x for x in entries if x.end_ts >= now - max_window]
     if not entries:
         return ""

@@ -66,3 +66,84 @@ def test_kb_empty_still_calls_llm(tmp_path):
     svc.buffer.add_transcript(TranscriptEntry(now - 5, now - 1, "讲讲TCP握手"))
     out = "".join(svc.trigger())
     assert "RDB" in out and len(llm.calls) == 1  # 无检索片段仍生成
+
+# --- 路由（spec §5）：statement 不检索；距离阈值；FTS 越过；Hash 降级 ---
+from core.retriever import Retrieved
+
+def _feed(svc, text, sec_ago=6):
+    now = time.time()
+    svc.buffer.add_transcript(TranscriptEntry(now - sec_ago - 2, now - sec_ago, text))
+
+def test_statement_turn_skips_retrieval():
+    calls = {"retrieve": 0}
+    class R:
+        distances_reliable = False
+        last_top_distance = None
+        def retrieve(self, q, k=5):
+            calls["retrieve"] += 1
+            return []
+    llm = FakeLLM()
+    svc = RagService(R(), llm)
+    _feed(svc, "我们团队主要做 ToB 业务")
+    out = "".join(svc.trigger())
+    assert calls["retrieve"] == 0 and len(llm.calls) == 1
+    assert svc.last_notice == "接话 · 未用资料"
+    assert "RDB" in out
+
+def test_open_turn_without_refs_notices_open(tmp_path):
+    kb = KnowledgeBase(tmp_path / "kb.db", HashEmbedder(dim=512))
+    svc = RagService(Retriever(kb, HashEmbedder(dim=512)), FakeLLM())
+    _feed(svc, "介绍一下你的项目经历")
+    "".join(svc.trigger())
+    assert svc.last_notice == "开放题 · 未用资料"
+
+class FakeRetriever:
+    def __init__(self, contexts, reliable=True, top=0.9):
+        self._c = contexts
+        self.distances_reliable = reliable
+        self.last_top_distance = top
+    def retrieve(self, q, k=5):
+        return self._c
+
+_REF = Retrieved(chunk_id=1, text="RDB 定时快照 AOF 追加日志", heading_path="Redis",
+                 source_file="redis.md", score=-1)
+
+def test_reliable_distance_within_threshold_uses_refs():
+    svc = RagService(FakeRetriever([_REF], reliable=True, top=0.9), FakeLLM())
+    _feed(svc, "RDB持久化怎么做的")
+    "".join(svc.trigger())
+    assert svc.last_notice == "基于知识库 · 1 条资料"
+    assert svc.last_had_refs is True
+
+def test_reliable_distance_over_threshold_falls_to_generic():
+    # 原计划喂「…是啥样的」：经实测 classify_turn 判为 statement（不检索），
+    # 距离阈值分支根本不会执行——改一个字（啥→怎）使其为 question 类，意图不变。
+    svc = RagService(FakeRetriever([_REF], reliable=True, top=1.3), FakeLLM())
+    _feed(svc, "TCP三次握手详细过程是怎样的")
+    "".join(svc.trigger())
+    assert svc.last_notice == "通用回答（知识库无命中）"
+    assert svc.last_had_refs is False
+
+def test_fts_four_char_hit_overrides_distance():
+    ctx = Retrieved(chunk_id=2, text="项目经历应当用 STAR 法则组织", heading_path="h",
+                    source_file="s.md", score=-1)
+    svc = RagService(FakeRetriever([ctx], reliable=True, top=1.3), FakeLLM())
+    _feed(svc, "介绍一下你的项目经历")
+    "".join(svc.trigger())
+    assert svc.last_notice == "基于知识库 · 1 条资料"   # ≥4 字词项「项目经历」子串命中
+
+def test_hash_embedder_keeps_legacy_behavior():
+    svc = RagService(FakeRetriever([_REF], reliable=False, top=None), FakeLLM())
+    _feed(svc, "RDB持久化怎么做的")
+    "".join(svc.trigger())
+    assert svc.last_had_refs is True                    # 有结果即注入（降级旧行为）
+
+def test_question_no_hits_keeps_legacy_notice(tmp_path):
+    # 裁决 1：空 KB 的提问话轮不注入资料仍生成，标注沿用旧文案；
+    # 分类在 question/chatter 间漂移均为合法（双合法值断言），不设死变量。
+    kb = KnowledgeBase(tmp_path / "kb.db", HashEmbedder(dim=512))
+    svc = RagService(Retriever(kb, HashEmbedder(dim=512)), FakeLLM())
+    _feed(svc, "讲讲TCP握手")
+    "".join(svc.trigger())
+    assert svc.last_notice in ("通用回答（知识库无命中）", "接话 · 未用资料")
+    assert len(svc.llm.calls) == 1
