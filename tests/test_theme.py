@@ -1,24 +1,30 @@
-# tests/test_theme.py —— DSH 暗色设计系统（VoxRecall 同源）：令牌齐全、QSS 覆盖核心控件
+# tests/test_theme.py —— retro terminal 设计系统：tokens 齐全、暗色取值、QSS 覆盖核心控件
 from app.theme import TOKENS, build_qss
 
 
 def test_tokens_complete():
-    need = {"bg", "layer1", "layer2", "layer3", "border", "text", "text_dim",
-            "accent", "ok", "warn", "danger", "radius", "font"}
+    need = {"bg", "bg_raise", "bg_hover", "fg", "fg_dim", "fg_faint",
+            "line", "line_soft", "accent", "warn", "danger", "font"}
     assert need <= set(TOKENS)
 
 
-def test_dsh_dark_palette():
-    # VoxRecall/DSH：950 底 + 分层面板 + 蓝强调
-    assert TOKENS["bg"] == "#151517"
-    assert TOKENS["layer1"] == "#232324"
-    assert TOKENS["layer3"] == "#353638"
-    assert TOKENS["accent"] == "#7aaaff"
+def test_terminal_dark_values():
+    assert TOKENS["bg"] == "#0a0a0a"
+    assert TOKENS["fg"] == "#e6e6e6"
+    assert TOKENS["accent"] == "#5af78e"
+    assert TOKENS["line"] == "#2a2a2a"
+    assert TOKENS["danger"] == "#f85149"
+
+
+def test_font_stack_is_mono():
+    assert "Cascadia Mono" in TOKENS["font"]
+    assert "Microsoft YaHei UI" in TOKENS["font"]
 
 
 def test_qss_covers_core_widgets_and_states():
     qss = build_qss()
-    for sel in ("QMainWindow", "QDialog", "QLabel#bubble_role", "QLabel#bubble_avatar",
-                "QLabel#bubble_note", "QTextBrowser#answer", "QWidget#feed",
-                "QPushButton[accent=\"true\"]"):
+    for sel in ("QMainWindow", "QPushButton", "QPushButton[accent=\"true\"]",
+                "QLineEdit", "QComboBox", "QCheckBox::indicator:checked",
+                "QProgressBar::chunk", "QTableView::item:selected",
+                "QTextBrowser#answer", "QWidget#statusline", "QPushButton#nav_tab:checked"):
         assert sel in qss, f"QSS 缺少 {sel}"

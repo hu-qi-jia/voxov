@@ -1,78 +1,102 @@
-# app/theme.py —— 设计系统 v3：DSH 暗色（与 VoxRecall web 端同源的 DeepSeek Harness 令牌）。
-# 分层面板（950 底 / 875·850 层）、白透明描边、蓝强调、绿=成功 橙=进行 红=错误。
+# app/theme.py —— 设计系统 v4：retro terminal 暗色。
+# 近黑底 / 磷光绿强调 / 1px 直线 / 等宽字栈；禁圆角、阴影、渐变。
 TOKENS = {
-    "bg":       "#151517",   # bg-base
-    "layer1":   "#232324",   # AI 气泡 / 输入场
-    "layer2":   "#2c2c2e",   # 卡片
-    "layer3":   "#353638",   # 用户气泡 / 悬停
-    "chrome":   "#1b1b1c",   # 侧栏
-    "border":   "#2e2e30",   # 白 12% 的等效实色
-    "text":     "#f9fafb",
-    "text_dim": "#adb2b8",
-    "text_faint": "#979da6",
-    "accent":   "#7aaaff",   # 业务蓝
-    "accent_deep": "#4176e6",
-    "ok":       "#22c55e",
-    "warn":     "#f59e0b",
-    "danger":   "#f25a5a",
-    "radius":     "10px",
-    "radius_sm":  "8px",
-    "font":       "'Segoe UI', 'Microsoft YaHei UI', 13px",
-    "font_sm":    "'Segoe UI', 'Microsoft YaHei UI', 12px",
+    "bg":        "#0a0a0a",
+    "bg_raise":  "#111111",
+    "bg_hover":  "#151515",
+    "fg":        "#e6e6e6",
+    "fg_dim":    "#9a9a9a",
+    "fg_faint":  "#5c5c5c",
+    "line":      "#2a2a2a",
+    "line_soft": "#1e1e1e",
+    "accent":    "#5af78e",
+    "warn":      "#e3b341",
+    "danger":    "#f85149",
+    "font":      "'Cascadia Mono', 'Consolas', 'Microsoft YaHei UI', monospace",
 }
 
 
 def build_qss() -> str:
     t = TOKENS
     return f"""
-    QMainWindow, QDialog {{ background: {t['bg']}; font: {t['font']}; }}
-    QWidget {{ color: {t['text']}; font: {t['font']}; }}
+    QMainWindow, QDialog {{ background: {t['bg']}; }}
+    QWidget {{ color: {t['fg']}; font-family: {t['font']}; font-size: 13px; }}
+    QLabel {{ background: transparent; }}
+    QLabel#hint, QLabel#turn_note, QLabel#dl_log {{ color: {t['fg_faint']};
+        font-size: 12px; }}
+    QLabel#turn_q {{ color: {t['fg_dim']}; }}
+    QLabel#sec_title {{ color: {t['fg_dim']}; }}
+    QLabel#status_info {{ color: {t['fg_faint']}; font-size: 12px; }}
+    QLabel#status_msg {{ font-size: 12px; }}
 
-    QLabel#hint, QLabel#subtitle {{ color: {t['text_dim']}; font: {t['font_sm']}; }}
-    QLabel#question {{ color: {t['text']}; font-weight: 600; }}
+    /* ---- 按钮：方角 1px 边框；accent=磷光绿描边 ---- */
+    QPushButton {{ background: transparent; border: 1px solid {t['line']};
+        padding: 6px 16px; color: {t['fg']}; }}
+    QPushButton:hover {{ background: {t['bg_hover']}; border-color: {t['fg_dim']}; }}
+    QPushButton:pressed {{ background: {t['bg_raise']}; }}
+    QPushButton:disabled {{ color: {t['fg_faint']}; border-color: {t['line_soft']}; }}
+    QPushButton[accent="true"] {{ border-color: {t['accent']}; color: {t['accent']}; }}
+    QPushButton[accent="true"]:hover {{ background: rgba(90, 247, 142, 0.06); }}
+    QPushButton[accent="true"]:disabled {{ color: {t['fg_faint']};
+        border-color: {t['line_soft']}; }}
+    QPushButton#nav_tab {{ border: none; border-bottom: 2px solid transparent;
+        color: {t['fg_dim']}; padding: 12px 2px 10px; border-radius: 0; }}
+    QPushButton#nav_tab:hover {{ background: transparent; color: {t['fg']}; }}
+    QPushButton#nav_tab:checked {{ color: {t['fg']};
+        border-bottom: 2px solid {t['accent']}; }}
 
-    /* ---- 按钮：DSH 主按钮白底黑字，次级描边 ---- */
-    QPushButton {{ background: transparent; border: 1px solid {t['border']};
-        border-radius: {t['radius']}; padding: 7px 16px; color: {t['text']}; }}
-    QPushButton:hover {{ background: {t['layer2']}; }}
-    QPushButton:pressed {{ background: {t['layer3']}; }}
-    QPushButton:disabled {{ color: {t['text_faint']}; }}
-    QPushButton[accent="true"] {{ background: {t['text']}; border: none; color: {t['bg']};
-        padding: 8px 20px; font-weight: 600; }}
-    QPushButton[accent="true"]:hover {{ background: #ffffff; }}
-    QPushButton[accent="true"]:disabled {{ background: {t['layer2']};
-        color: {t['text_faint']}; }}
-
-    /* ---- 输入/表格 ---- */
-    QLineEdit, QComboBox {{ background: {t['layer1']}; border: 1px solid {t['border']};
-        border-radius: {t['radius_sm']}; padding: 7px 10px;
-        selection-background-color: {t['accent_deep']}; }}
+    /* ---- 输入：方角、bg_raise 底、focus 绿框 ---- */
+    QLineEdit, QComboBox {{ background: {t['bg_raise']}; border: 1px solid {t['line']};
+        padding: 6px 10px; color: {t['fg']}; selection-background-color: {t['accent']}; }}
     QLineEdit:focus, QComboBox:focus {{ border-color: {t['accent']}; }}
-    QLineEdit:disabled, QComboBox:disabled {{ color: {t['text_faint']}; }}
-    QTableView {{ background: transparent; border: none; gridline-color: transparent; }}
-    QTableView::item {{ padding: 8px; border-bottom: 1px solid {t['border']}; }}
-    QTableView::item:selected {{ background: {t['layer3']}; }}
+    QLineEdit:disabled, QComboBox:disabled {{ color: {t['fg_faint']}; }}
+    QComboBox QAbstractItemView {{ background: {t['bg_raise']};
+        border: 1px solid {t['line']}; selection-background-color: {t['bg_hover']}; }}
+
+    /* ---- 复选：方框 + 内实心方块（checked） ---- */
+    QCheckBox {{ spacing: 8px; color: {t['fg']}; }}
+    QCheckBox::indicator {{ width: 13px; height: 13px;
+        border: 1px solid {t['fg_dim']}; background: transparent; }}
+    QCheckBox::indicator:hover {{ border-color: {t['fg']}; }}
+    QCheckBox::indicator:checked {{ background: {t['accent']};
+        border: 1px solid {t['fg_dim']}; }}
+
+    /* ---- 表格：无竖线、行间 1px、整行反白选中 ---- */
+    QTableView {{ background: transparent; border: none; gridline-color: transparent;
+        selection-background-color: {t['fg']}; selection-color: {t['bg']}; }}
+    QTableView::item {{ padding: 10px 12px; border-bottom: 1px solid {t['line_soft']}; }}
+    QTableView::item:selected {{ background: {t['fg']}; color: {t['bg']}; }}
     QHeaderView::section {{ background: transparent; border: none;
-        border-bottom: 1px solid {t['border']}; padding: 8px; color: {t['text_dim']};
-        font: {t['font_sm']}; }}
+        border-bottom: 1px solid {t['line']}; padding: 8px 12px;
+        color: {t['fg_faint']}; font-size: 12px; }}
 
-    /* ---- 对话流 ---- */
+    /* ---- 进度条：平面 ---- */
+    QProgressBar {{ background: {t['bg_raise']}; border: 1px solid {t['line']};
+        height: 10px; text-align: center; color: transparent; }}
+    QProgressBar::chunk {{ background: {t['accent']}; }}
+
+    /* ---- 对话流 / 状态行 ---- */
     QWidget#feed {{ background: {t['bg']}; }}
-    QTextBrowser#answer {{ background: transparent; border: none; color: {t['text']}; }}
-    QLabel#bubble_role {{ color: {t['text_faint']}; font: {t['font_sm']};
-        letter-spacing: 0.02em; }}
-    QLabel#bubble_avatar {{ border-radius: 15px; font-size: 12px; font-weight: 600; }}
-    QLabel#bubble_note {{ color: {t['warn']}; font: {t['font_sm']}; }}
+    QTextBrowser#answer {{ background: transparent; border: none; color: {t['fg']}; }}
+    QWidget#statusline {{ border-top: 1px solid {t['line']}; background: {t['bg']}; }}
+    QWidget#nav {{ border-bottom: 1px solid {t['line']}; background: {t['bg']}; }}
+    QFrame#hline {{ background: {t['line_soft']}; max-height: 1px; border: none; }}
 
-    QMenu {{ background: {t['layer2']}; border: 1px solid {t['border']};
-        border-radius: {t['radius_sm']}; }}
+    QMenu {{ background: {t['bg_raise']}; border: 1px solid {t['line']}; }}
     QMenu::item {{ padding: 6px 20px; }}
-    QMenu::item:selected {{ background: {t['layer3']}; }}
+    QMenu::item:selected {{ background: {t['bg_hover']}; }}
     QScrollBar:vertical {{ background: transparent; width: 8px; }}
-    QScrollBar::handle:vertical {{ background: {t['layer3']}; border-radius: 4px; }}
+    QScrollBar::handle:vertical {{ background: {t['line']}; }}
+    QScrollBar::handle:vertical:hover {{ background: {t['fg_faint']}; }}
     QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
     """
 
 
 def apply(app) -> None:
+    from PySide6.QtGui import QFont
+    f = QFont()
+    f.setFamilies(["Cascadia Mono", "Consolas", "Microsoft YaHei UI"])
+    f.setStyleHint(QFont.Monospace)
+    f.setLetterSpacing(QFont.AbsoluteSpacing, 0.5)
+    app.setFont(f)
     app.setStyleSheet(build_qss())
