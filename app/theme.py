@@ -52,6 +52,25 @@ def build_qss() -> str:
         border-radius: {t['radius_sm']}; }}
     QMenu::item {{ padding: 6px 20px; }}
     QMenu::item:selected {{ background: {t['elevated']}; }}
+    QWidget#sidebar {{ background: {t['surface']}; border-right: 1px solid {t['border']}; }}
+    QLabel#side_title {{ font-size: 16px; font-weight: 600; padding: 2px 6px 8px; }}
+    QPushButton#nav {{ background: transparent; border: none; border-radius: {t['radius_sm']};
+        padding: 9px 12px; text-align: left; color: {t['text_dim']}; }}
+    QPushButton#nav:hover {{ background: {t['elevated']}; color: {t['text']}; }}
+    QPushButton#nav:checked {{ background: {t['elevated']}; color: {t['accent']};
+        font-weight: 600; }}
+    QPushButton#side_small {{ background: transparent; border: none; color: {t['text_dim']};
+        padding: 6px 8px; text-align: left; }}
+    QPushButton#side_small:hover {{ color: {t['text']}; background: {t['elevated']};
+        border-radius: {t['radius_sm']}; }}
+    QLabel#model_status {{ color: {t['text_dim']}; font: {t['font_sm']}; padding: 4px 8px; }}
+    QLabel#model_status[state="ok"] {{ color: {t['accent']}; }}
+    QLabel#model_status[state="dl"] {{ color: {t['text']}; }}
+    QLabel#model_status[state="err"] {{ color: {t['danger']}; }}
+    QLabel#hint {{ color: {t['text_dim']}; font: {t['font_sm']}; }}
+    QWidget#page {{ background: {t['bg']}; }}
+    QTextEdit#subtitle_view {{ background: {t['surface']}; border: 1px solid {t['border']};
+        border-radius: {t['radius']}; padding: 8px; color: {t['text_dim']}; }}
     QScrollBar:vertical {{ background: transparent; width: 8px; }}
     QScrollBar::handle:vertical {{ background: {t['border']}; border-radius: 4px; }}
     """
