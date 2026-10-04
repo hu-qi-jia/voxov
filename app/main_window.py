@@ -27,8 +27,7 @@ class MainWindow(QMainWindow):
         self.overlay = OverlayWindow()
         self._main_answer_buf = ""      # 主窗口问答流缓冲（与悬浮窗同源双写）
         self.subtitle_sig.connect(self._on_subtitle)
-        self.audio_error_sig.connect(
-            lambda m: self.overlay.show_status(f"音频异常：{m}，请重新开始监听"))
+        self.audio_error_sig.connect(self._on_audio_error)
         self._worker = None
         self._pipeline = None
         self._load_worker = None     # Bug 2/M7：转写器后台加载
@@ -252,6 +251,7 @@ class MainWindow(QMainWindow):
                            log_file=self.cfg.data_dir / "download.log")
         w.failed.connect(self._on_dl_failed)
         w.finished_ok.connect(self._on_dl_ok)
+        w.progress.connect(self._on_dl_progress)
         self._dl_worker = w
         self._set_model_state("dl")
         self._dl_heart = QTimer(self, interval=5000)
@@ -283,6 +283,9 @@ class MainWindow(QMainWindow):
             return
         secs = int(self._dl_worker.elapsed())
         self.model_status_label.setText(f"下载中… 已 {secs}s")
+
+    def _on_dl_progress(self, p: float) -> None:
+        self.model_status_label.setText(f"下载中… {int(p * 100)}%")
 
     def _set_model_state(self, state: str) -> None:
         text = {"missing": "未下载", "dl": "下载中…", "ok": "模型就绪",
@@ -459,6 +462,13 @@ class MainWindow(QMainWindow):
     def _on_subtitle(self, t: str) -> None:
         self.overlay.set_subtitle(t)
         self.subtitle_view.append(t)
+
+    def _on_audio_error(self, m: str) -> None:
+        """音频异常：错误进主窗口（悬浮窗只留一行），管线复位可重开。"""
+        self._pipeline = None
+        self._set_listen_btn("开始监听")
+        self.statusBar().showMessage(f"音频异常：{m}", 10000)
+        self.overlay.show_status(f"音频异常，已停止监听（点主窗口“开始监听”重试）")
 
     def _on_question(self, q: str) -> None:
         if q:

@@ -1,33 +1,90 @@
-# tests/test_downloader.py
-from pathlib import Path
-from core import downloader
+# tests/test_downloader.py —— 模型获取 v2：纯 HTTP 下载 + 完整性门禁
+import tarfile
 
-def test_models_ready_false_then_true(tmp_path, monkeypatch):
-    assert downloader.models_ready(tmp_path) is False
-    for sub in ("SenseVoiceSmall", "fsmn-vad", "ct-punc", "bge-small-zh-v1.5"):
-        (tmp_path / sub).mkdir(parents=True, exist_ok=True)
-        (tmp_path / sub / "model.bin").write_bytes(b"x")  # 有实质文件才算完成
-    assert downloader.models_ready(tmp_path) is True
+import core.downloader as dl
 
-def test_ensure_models_downloads_all(tmp_path, monkeypatch):
+
+def _mk_tar(src_dir, members):
+    p = src_dir / "arch.tar.bz2"
+    with tarfile.open(p, "w:bz2") as t:
+        for name, content in members.items():
+            import io
+            data = content.encode("utf-8")
+            info = tarfile.TarInfo(name="bundle/" + name)
+            info.size = len(data)
+            t.addfile(info, io.BytesIO(data))
+    return p
+
+
+def test_models_ready_requires_all_four_files(tmp_path):
+    assert dl.models_ready(tmp_path) is False
+    (tmp_path / "asr").mkdir()
+    (tmp_path / "asr" / "model.int8.onnx").write_bytes(b"x")
+    assert dl.models_ready(tmp_path) is False
+    (tmp_path / "asr" / "tokens.txt").write_bytes(b"x")
+    (tmp_path / "embed").mkdir()
+    (tmp_path / "embed" / "model.onnx").write_bytes(b"x")
+    assert dl.models_ready(tmp_path) is False
+    (tmp_path / "embed" / "tokenizer.json").write_bytes(b"x")
+    assert dl.models_ready(tmp_path) is True
+
+
+def test_ensure_models_downloads_and_extracts(tmp_path):
     calls = []
-    monkeypatch.setattr(downloader, "_download_modelscope",
-                        lambda repo, dest, log: calls.append(("ms", repo, dest)) or dest.mkdir(parents=True, exist_ok=True))
-    monkeypatch.setattr(downloader, "_download_hf",
-                        lambda repo, dest, log: calls.append(("hf", repo, dest)) or dest.mkdir(parents=True, exist_ok=True))
-    logs = []
-    downloader.ensure_models(tmp_path, logs.append)
-    repos = {c[1] for c in calls}
-    assert any("SenseVoiceSmall" in r for r in repos)
-    assert any("bge-small-zh-v1.5" in r for r in repos)
-    assert any("开始下载" in l for l in logs)
 
-def test_ensure_models_skips_existing(tmp_path, monkeypatch):
-    (tmp_path / "SenseVoiceSmall").mkdir()
-    n = []
-    monkeypatch.setattr(downloader, "_download_modelscope",
-                        lambda repo, dest, log: n.append(1) or dest.mkdir(parents=True, exist_ok=True))
-    monkeypatch.setattr(downloader, "_download_hf",
-                        lambda repo, dest, log: n.append(1) or dest.mkdir(parents=True, exist_ok=True))
-    downloader.ensure_models(tmp_path, lambda *_: None)
-    assert len(n) == 3  # 只下载缺失的 3 个
+    def fake_fetch(urls, dest, progress=None):
+        calls.append((tuple(urls), dest.name))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.suffix == ".bz2":
+            p = _mk_tar(dest.parent, {"model.int8.onnx": "M", "tokens.txt": "T"})
+            shutil.copyfile(p, dest)
+        else:
+            dest.write_bytes(b"E")
+
+    import shutil
+    logs = []
+    percents = []
+    dl.ensure_models(tmp_path, logs.append, progress=percents.append, fetch=fake_fetch)
+    assert (tmp_path / "asr" / "model.int8.onnx").exists()
+    assert (tmp_path / "asr" / "tokens.txt").exists()
+    assert (tmp_path / "embed" / "model.onnx").exists()
+    assert (tmp_path / "embed" / "tokenizer.json").exists()
+    assert any("[完成]" in m for m in logs)
+    assert not (tmp_path / "asr_archive.tar.bz2").exists()   # 归档用后即删
+
+
+def test_ensure_models_skips_when_ready(tmp_path):
+    for rel in dl.REQUIRED:
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"x")
+
+    def boom(*a, **k):
+        raise AssertionError("已就绪不应下载")
+
+    logs = []
+    dl.ensure_models(tmp_path, logs.append, fetch=boom)
+    assert any("就绪" in m for m in logs)
+
+
+def test_fetch_to_tries_all_mirrors_then_raises(tmp_path, monkeypatch):
+    errs = []
+
+    class FakeResp:
+        def __init__(self, body): self.body = body
+        def read(self, n): return b""
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        headers = {}
+
+    def fake_urlopen(req, timeout):
+        errs.append(req.full_url)
+        raise IOError("connection refused")
+
+    monkeypatch.setattr(dl.urllib.request, "urlopen", fake_urlopen)
+    import pytest
+    with pytest.raises(RuntimeError, match="下载失败"):
+        dl._fetch_to(["https://m1.example/a", "https://m2.example/a"],
+                     tmp_path / "x.bin")
+    assert len(errs) == 2                      # 两个镜像都试过
+    assert not (tmp_path / "x.bin.part").exists()

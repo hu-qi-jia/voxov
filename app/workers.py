@@ -11,6 +11,7 @@ class DownloadWorker(QThread):
     """模型下载线程（Bug 1 / M6）：任何异常浮出为 failed，绝不静默死亡。
     下载全程同步落盘 data/download.log——冻结环境无控制台，故障靠它取证。"""
     line = Signal(str)
+    progress = Signal(float)
     finished_ok = Signal()
     failed = Signal(str)
 
@@ -35,8 +36,8 @@ class DownloadWorker(QThread):
     def run(self) -> None:
         try:
             from core.downloader import ensure_models
-            self._tee(f"[启动] MODELSCOPE_CACHE={os.environ.get('MODELSCOPE_CACHE') or '(未设置)'}")
-            ensure_models(self.models_dir, self._tee)
+            ensure_models(self.models_dir, self._tee,
+                          progress=lambda p: self.progress.emit(p))
             self.finished_ok.emit()
         except Exception as exc:
             self.failed.emit(f"{type(exc).__name__}: {exc}")
@@ -61,8 +62,8 @@ class LoadWorker(QThread):
 
     def run(self) -> None:
         try:
-            from core.transcriber import FunasrTranscriber
-            self.loaded.emit(FunasrTranscriber(self.models_dir))
+            from core.transcriber import SherpaTranscriber
+            self.loaded.emit(SherpaTranscriber(self.models_dir))
         except Exception as exc:
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 

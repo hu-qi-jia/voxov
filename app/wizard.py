@@ -28,8 +28,11 @@ class ModelWizard(QDialog):
         worker.line.connect(self.log_view.append)
         worker.failed.connect(self._on_fail)
         worker.finished_ok.connect(self._on_ok)
+        if hasattr(worker, "progress"):
+            worker.progress.connect(
+                lambda p: self.heart_label.setText(f"下载中… {int(p * 100)}%"))
         self.retry_btn.setEnabled(False)
-        self.heart_label.setText("下载中…（约 1 GB，可能需要数分钟）")
+        self.heart_label.setText("下载中…（约 250MB）")
         self._heart.start()
         self._tick_heartbeat()
 
@@ -51,4 +54,4 @@ class ModelWizard(QDialog):
 
     def _tick_heartbeat(self) -> None:
         secs = int(self._worker.elapsed())
-        self.heart_label.setText(f"下载中… 已 {secs}s（约 1 GB，可能需要数分钟）")
+        self.heart_label.setText(f"下载中… 已 {secs}s（约 250MB）")

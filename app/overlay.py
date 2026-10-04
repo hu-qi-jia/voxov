@@ -1,11 +1,13 @@
 # app/overlay.py
 from PySide6.QtCore import Qt, QPoint
 from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QLabel, QTextBrowser, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QToolButton, QTextBrowser,
+                               QVBoxLayout, QWidget)
 
 
 class OverlayWindow(QWidget):
-    """置顶悬浮窗：字幕区 + 问题标题 + 流式答案（spec §2/§6.5/§6.8）。"""
+    """置顶悬浮窗：字幕区 + 问题标题 + 流式答案（spec §2/§6.5/§6.8）。
+    必须可由用户直接关闭（✕ / Esc）——无边框窗口不能只靠热键逃生。"""
 
     def __init__(self) -> None:
         super().__init__(None,
@@ -13,28 +15,49 @@ class OverlayWindow(QWidget):
         self.setWindowTitle("Notes")           # 对外中性标题（spec §6.5）
         self.setObjectName("overlay")
         self.setAttribute(Qt.WA_StyledBackground, True)  # 让 QSS 背景生效
-        self.setWindowOpacity(0.92)
+        self.setWindowOpacity(0.96)
         self.resize(460, 320)
         self._subtitles: list[str] = []
         self._answer_buf = ""
         self._drag_offset: QPoint | None = None
 
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 10, 14, 12)
+        lay.setSpacing(8)
+
+        top = QHBoxLayout()
         self.subtitle_label = QLabel("(等待音频…)")
         self.subtitle_label.setObjectName("subtitle")
         self.subtitle_label.setWordWrap(True)
+        top.addWidget(self.subtitle_label, 1)
+        self.close_btn = QToolButton()
+        self.close_btn.setObjectName("overlay_close")
+        self.close_btn.setText("✕")
+        self.close_btn.setCursor(Qt.PointingHandCursor)
+        self.close_btn.setToolTip("关闭悬浮窗（不影响监听）")
+        self.close_btn.clicked.connect(self.hide)
+        top.addWidget(self.close_btn)
+        lay.addLayout(top)
+
         self.question_label = QLabel("")
         self.question_label.setObjectName("question")
         self.question_label.setWordWrap(True)
+        lay.addWidget(self.question_label)
         self.answer_view = QTextBrowser()
         self.answer_view.setObjectName("answer")
         self.answer_view.setOpenExternalLinks(False)
+        lay.addWidget(self.answer_view, stretch=1)
         self.status_label = QLabel("")
         self.status_label.setObjectName("status")
-        lay.addWidget(self.subtitle_label)
-        lay.addWidget(self.question_label)
-        lay.addWidget(self.answer_view, stretch=1)
+        self.status_label.setWordWrap(True)
         lay.addWidget(self.status_label)
+
+    def keyPressEvent(self, e) -> None:
+        from PySide6.QtCore import Qt as _Qt
+        if e.key() == _Qt.Key_Escape:
+            self.hide()
+        else:
+            super().keyPressEvent(e)
 
     def set_subtitle(self, text: str) -> None:
         self._subtitles = (self._subtitles + [text])[-3:]

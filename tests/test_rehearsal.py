@@ -46,7 +46,7 @@ def test_start_rehearsal_builds_pipeline_and_transcribes(win2, qtbot, tmp_path, 
 
     import core.transcriber as tr
     import core.downloader as dl
-    monkeypatch.setattr(tr, "FunasrTranscriber", lambda models_dir: FakeTranscriber())
+    monkeypatch.setattr(tr, "SherpaTranscriber", lambda models_dir: FakeTranscriber())
     monkeypatch.setattr(dl, "models_ready", lambda md: True)  # 门禁放行
     win2.start_rehearsal(wav)
     qtbot.waitUntil(lambda: win2._pipeline is not None, timeout=5000)  # 异步加载

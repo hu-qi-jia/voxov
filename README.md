@@ -18,13 +18,13 @@ git clone https://github.com/hu-qi-jia/voxov.git
 cd voxov
 py -3.13 -m venv .venv
 .venv\Scripts\activate
-pip install -e ".[ml]"        # ml 组含 funasr/torch/sentence-transformers 等大件
+pip install -e ".[ml]"        # ml 组含 sherpa-onnx / onnxruntime / tokenizers（无 torch）
 python main.py
 ```
 
 ### 首次运行：模型自动下载（开箱即用）
 
-首次启动检测到模型缺失时**自动在后台下载**（约 1 GB，来自 ModelScope 语音模型与 hf-mirror.com 向量模型，支持断点续传），无需任何点击——左栏底部状态灯实时显示「下载中…/模型就绪/下载失败」。下载失败时点左栏 **下载模型** 重试。HuggingFace 直连不畅时已默认走 `HF_ENDPOINT=https://hf-mirror.com` 镜像。
+首次启动检测到模型缺失时**自动在后台下载**（共约 250MB：sherpa-onnx SenseVoice int8 语音模型 + bge-small-zh 向量模型，GitHub Releases / hf-mirror，支持断点重试），无需任何点击——左栏底部状态灯实时显示「下载中… N%/模型就绪/下载失败」。下载失败时点左栏 **下载模型** 重试。
 
 ### 配置 LLM（设置页）
 

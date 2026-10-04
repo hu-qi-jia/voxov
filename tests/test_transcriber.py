@@ -15,14 +15,14 @@ def test_fake_transcriber_returns_fixed():
     assert t.transcribe(b"\x00\x00" * 1600) == "你好"
 
 @pytest.mark.model
-def test_funasr_real_model_chinese():
+def test_sherpa_real_model_chinese():
     from core.config import default_config
-    from core.transcriber import FunasrTranscriber
+    from core.transcriber import SherpaTranscriber
     cfg = default_config()
-    if not (cfg.models_dir / "SenseVoiceSmall").exists():
+    if not (cfg.models_dir / "asr" / "model.int8.onnx").exists():
         pytest.skip("模型未下载")
-    t = FunasrTranscriber(cfg.models_dir)
-    # 1 秒 440Hz 正弦（静音样式的稳定音，主要验证链路不崩、返回字符串）
+    t = SherpaTranscriber(cfg.models_dir)
+    # 1 秒 440Hz 正弦（主要验证链路不崩、返回字符串）
     pcm = (np.sin(2 * np.pi * 440 * np.arange(16000) / 16000) * 8000).astype(np.int16)
     out = t.transcribe(pcm.tobytes())
     assert isinstance(out, str)

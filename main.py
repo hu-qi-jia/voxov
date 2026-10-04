@@ -11,7 +11,7 @@ from app.tray import create_tray
 def build_app():
     cfg = cc.load_config(cc.app_root() / "data")  # 审查 C2：打包后 __file__ 在 _internal
     cfg.ensure_dirs()
-    from core.embedder import BgeEmbedder, HashEmbedder
+    from core.embedder import OnnxEmbedder, HashEmbedder
     from core.kb import KnowledgeBase
     from core.rag import RagService
     from core.generator import LLMClient
@@ -19,7 +19,10 @@ def build_app():
     from core.session import SessionRecorder
     from core.downloader import models_ready
     models_ok = models_ready(cfg.models_dir)
-    embedder = BgeEmbedder(cfg.models_dir / "bge-small-zh-v1.5") if models_ok else HashEmbedder()
+    try:
+        embedder = OnnxEmbedder(cfg.models_dir / "embed") if models_ok else HashEmbedder()
+    except Exception:
+        embedder = HashEmbedder()
     kb = KnowledgeBase(cfg.kb_path, embedder)
 
     def make_rag(recorder):

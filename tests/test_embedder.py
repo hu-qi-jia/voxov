@@ -16,14 +16,14 @@ def test_hash_embedder_empty_input():
     assert HashEmbedder().encode([]) == []
 
 @pytest.mark.model
-def test_bge_embedder_real_model():
-    from core.embedder import BgeEmbedder
+def test_onnx_embedder_real_model():
+    from core.embedder import OnnxEmbedder
     from core.config import default_config
     cfg = default_config()
-    model_dir = cfg.models_dir / "bge-small-zh-v1.5"
-    if not model_dir.exists():
+    model_dir = cfg.models_dir / "embed"
+    if not (model_dir / "model.onnx").exists():
         pytest.skip("模型未下载")
-    e = BgeEmbedder(model_dir)
+    e = OnnxEmbedder(model_dir)
     a, b = e.encode(["Redis 持久化有哪几种方式", "RDB 和 AOF 的区别"])
     assert len(a) == 512
     # 语义相近的中文句子余弦相似度应高于无关句

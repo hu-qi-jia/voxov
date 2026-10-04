@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ml = ["torch>=2.2", "funasr>=1.1", "sentence-transformers>=2.7", "huggingface_hub>=0.23", "modelscope>=1.15"]
+ml = ["sherpa-onnx>=1.10", "onnxruntime>=1.18", "tokenizers>=0.19", "numpy>=1.26"]
 dev = ["pytest>=8.0", "pytest-qt>=4.4"]
 
 [tool.setuptools]

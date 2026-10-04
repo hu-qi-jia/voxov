@@ -1,32 +1,15 @@
-# interview-assistant.spec
-# -*- mode: python ; coding: utf-8 -*-
-# 打包缺陷修复（Bug 1 根因）：funasr 运行时按模型 config 动态 import 子模块，
-# 只靠静态分析会漏掉 funasr.models/* 等 —— 必须显式 collect_submodules；
-# modelscope 元数据/数据文件缺失会在冻结环境下 import 失败 —— collect_data_files + copy_metadata。
-from PyInstaller.utils.hooks import (collect_dynamic_libs, collect_submodules,
-                                     collect_data_files, copy_metadata)
-
-# funasr/register.py 对每个注册类 inspect.getsourcelines —— 冻结环境无源码即抛
-# OSError("could not get source code")。把 .py 一并打进 _internal/funasr/（与模块
-# __file__ 一致），inspect 即可读到。
-datas = [("assets", "assets")] \
-    + collect_data_files("modelscope") \
-    + collect_data_files("funasr") \
-    + collect_data_files("funasr", include_py_files=True) \
-    + copy_metadata("modelscope") \
-    + copy_metadata("funasr") \
-    + copy_metadata("huggingface_hub")
+# interview-assistant.spec —— v2：sherpa-onnx 语音层，无 torch/funasr/modelscope
+from PyInstaller.utils.hooks import collect_dynamic_libs
 
 a = Analysis(
     ["main.py"],
     pathex=[],
-    binaries=collect_dynamic_libs("sqlite_vec"),  # vec0.dll 是包数据，需显式收集
-    datas=datas,
+    binaries=collect_dynamic_libs("sqlite_vec") + collect_dynamic_libs("sherpa_onnx"),
+    datas=[("assets", "assets")],
     hiddenimports=[
-        "funasr", "funasr.auto", "sqlite_vec",
-        "sentence_transformers", "pyaudiowpatch",
-        "keyboard", "torch", "transformers",
-    ] + collect_submodules("funasr") + collect_submodules("modelscope"),
+        "sherpa_onnx", "sqlite_vec", "pyaudiowpatch", "keyboard",
+        "tokenizers", "onnxruntime",
+    ],
     hookspath=[],
     runtime_hooks=[],
     excludes=["tkinter", "matplotlib"],

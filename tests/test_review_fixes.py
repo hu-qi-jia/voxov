@@ -165,7 +165,7 @@ def test_rehearsal_uses_dedicated_rag_and_hotkey_follows(win, qtbot, tmp_path, m
     import core.downloader as dl
     class _FT:
         def transcribe(self, pcm, sample_rate=16000): return "彩排"
-    monkeypatch.setattr(tr, "FunasrTranscriber", lambda md: _FT())
+    monkeypatch.setattr(tr, "SherpaTranscriber", lambda md: _FT())
     monkeypatch.setattr(dl, "models_ready", lambda md: True)
     w.start_rehearsal(_wav1s(tmp_path))
     assert w._rehearsal_rag is rehearse

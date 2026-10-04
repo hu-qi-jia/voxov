@@ -115,9 +115,10 @@ def test_auto_download_starts_when_models_missing(win, qtbot, monkeypatch):
 
 
 def test_auto_download_skips_when_models_ready(win, qtbot):
-    for sub in ("SenseVoiceSmall", "fsmn-vad", "ct-punc", "bge-small-zh-v1.5"):
-        (win.cfg.models_dir / sub).mkdir(parents=True, exist_ok=True)
-        (win.cfg.models_dir / sub / "model.bin").write_bytes(b"x")  # 模拟下载完成
+    for rel in dl.REQUIRED:                    # 新布局：asr/embed 四文件
+        f = win.cfg.models_dir / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"x")
     win.maybe_auto_download()
     assert win._dl_worker is None
     assert "就绪" in win.model_status_label.text()
@@ -201,7 +202,7 @@ def test_load_worker_loaded_and_failed(qtbot, monkeypatch):
     class _FT:
         def transcribe(self, pcm, sample_rate=16000): return "x"
 
-    monkeypatch.setattr(tr, "FunasrTranscriber", lambda md: _FT())
+    monkeypatch.setattr(tr, "SherpaTranscriber", lambda md: _FT())
     w = LoadWorker(models_dir=None)
     got = []
     w.loaded.connect(got.append)
@@ -211,7 +212,7 @@ def test_load_worker_loaded_and_failed(qtbot, monkeypatch):
     def raiser(md):
         raise RuntimeError("模型损坏")
 
-    monkeypatch.setattr(tr, "FunasrTranscriber", raiser)
+    monkeypatch.setattr(tr, "SherpaTranscriber", raiser)
     w2 = LoadWorker(models_dir=None)
     fails = []
     w2.failed.connect(fails.append)
@@ -227,7 +228,7 @@ def test_start_listening_gated_when_models_missing(win, qtbot, monkeypatch):
     def boom(md):
         raise AssertionError("门禁未生效：不应构造转写器")
 
-    monkeypatch.setattr(tr, "FunasrTranscriber", boom)
+    monkeypatch.setattr(tr, "SherpaTranscriber", boom)
     opened = []
     win._open_wizard = lambda: opened.append(1)
     win.start_listening()
@@ -256,7 +257,7 @@ def _patch_av(monkeypatch, transcriber_text="x"):
             return transcriber_text
 
     monkeypatch.setattr(cap, "LiveAudioSource", _FakeLive)
-    monkeypatch.setattr(tr, "FunasrTranscriber", lambda md: _FT())
+    monkeypatch.setattr(tr, "SherpaTranscriber", lambda md: _FT())
     monkeypatch.setattr(dl, "models_ready", lambda md: True)
     return made
 
@@ -276,7 +277,7 @@ def test_start_listening_loads_async_and_passes_device(win, qtbot, monkeypatch):
 def test_start_listening_load_failure_surfaces(win, qtbot, monkeypatch):
     import core.transcriber as tr
     monkeypatch.setattr(dl, "models_ready", lambda md: True)
-    monkeypatch.setattr(tr, "FunasrTranscriber",
+    monkeypatch.setattr(tr, "SherpaTranscriber",
                         lambda md: (_ for _ in ()).throw(RuntimeError("模型损坏")))
     win.start_listening()
     qtbot.waitUntil(lambda: "启动失败" in win.statusBar().currentMessage(), timeout=5000)
@@ -292,54 +293,6 @@ def test_rehearsal_also_gated_when_models_missing(win, qtbot, monkeypatch, tmp_p
     win.start_rehearsal(tmp_path / "x.wav")
     assert win._pipeline is None
     assert opened == [1]
-
-
-# --- 缓存重定位：绝不写用户主目录（安全软件拦 WinError 5，E1022） ---
-def test_modelscope_import_progress_is_logged(monkeypatch, tmp_path):
-    """冻结环境 modelscope 导入极慢且可能卡死：日志必须暴露每一步。"""
-    import sys
-    import types
-    lines = []
-    fake = types.ModuleType("modelscope")
-    fake.snapshot_download = lambda repo, local_dir=None: None
-    monkeypatch.setitem(sys.modules, "modelscope", fake)
-    dl._download_modelscope("iic/x", tmp_path / "m" / "SenseVoiceSmall", lines.append)
-    assert any("加载下载组件" in m for m in lines)
-    assert any("下载组件就绪" in m for m in lines)
-
-
-def test_modelscope_home_relocated(monkeypatch, tmp_path):
-    """E1022 拦的是 MODELSCOPE_HOME（SDK 配置目录 ~/.modelscope），非缓存目录。"""
-    import os
-    import sys
-    import types
-    captured = {}
-    fake = types.ModuleType("modelscope")
-
-    def snapshot_download(repo, local_dir=None):
-        captured["home"] = os.environ.get("MODELSCOPE_HOME")
-
-    fake.snapshot_download = snapshot_download
-    monkeypatch.setitem(sys.modules, "modelscope", fake)
-    monkeypatch.delenv("MODELSCOPE_HOME", raising=False)
-    dl._download_modelscope("iic/x", tmp_path / "m" / "SenseVoiceSmall", lambda m: None)
-    assert captured["home"] == str(tmp_path / "m" / "_cache" / "modelscope_home")
-
-
-def test_models_ready_requires_complete_download(tmp_path):
-    md = tmp_path / "models"
-    for sub in ("SenseVoiceSmall", "fsmn-vad", "ct-punc", "bge-small-zh-v1.5"):
-        (md / sub).mkdir(parents=True)
-    assert not dl.models_ready(md)            # 空仓库 = 下载刚起步，未就绪
-    (md / "SenseVoiceSmall" / "model.pt").write_bytes(b"x")
-    assert not dl.models_ready(md)            # 其他仓库仍空
-    for sub in ("fsmn-vad", "ct-punc", "bge-small-zh-v1.5"):
-        (md / sub / "model.bin").write_bytes(b"x")
-    assert dl.models_ready(md)                # 全部有实质文件 → 就绪
-    (md / "fsmn-vad" / "model.bin.incomplete").write_bytes(b"x")
-    assert not dl.models_ready(md)            # 存在未完成临时文件 → 仍在下载
-    (md / "fsmn-vad" / "model.bin.parallel_tmp").write_bytes(b"x")
-    assert not dl.models_ready(md)
 
 
 # --- 非 ASCII 模型路径：sentencepiece/torch 的 C++ 层打不开中文路径 ---
@@ -401,41 +354,3 @@ def test_single_instance_second_launch_refuses(tmp_path):
     assert acquire_single_instance(tmp_path)   # 释放后可再取
     release_single_instance()
 
-
-def test_modelscope_cache_relocated_into_models_dir(monkeypatch, tmp_path):
-    import os
-    import sys
-    import types
-    captured = {}
-    fake = types.ModuleType("modelscope")
-
-    def snapshot_download(repo, local_dir=None):
-        captured["cache"] = os.environ.get("MODELSCOPE_CACHE")
-
-    fake.snapshot_download = snapshot_download
-    monkeypatch.setitem(sys.modules, "modelscope", fake)
-    monkeypatch.delenv("MODELSCOPE_CACHE", raising=False)
-    dl._download_modelscope("iic/x", tmp_path / "models" / "SenseVoiceSmall",
-                            lambda m: None)
-    assert captured["cache"] == str(tmp_path / "models" / "_cache" / "modelscope")
-
-
-def test_hf_cache_relocated_into_models_dir(monkeypatch, tmp_path):
-    import os
-    import sys
-    import types
-    captured = {}
-    fake = types.ModuleType("huggingface_hub")
-
-    def snapshot_download(repo, local_dir=None):
-        captured["home"] = os.environ.get("HF_HOME")
-        captured["endpoint"] = os.environ.get("HF_ENDPOINT")
-
-    fake.snapshot_download = snapshot_download
-    monkeypatch.setitem(sys.modules, "huggingface_hub", fake)
-    monkeypatch.delenv("HF_HOME", raising=False)
-    monkeypatch.delenv("HF_ENDPOINT", raising=False)
-    dl._download_hf("BAAI/x", tmp_path / "models" / "bge-small-zh-v1.5",
-                    lambda m: None)
-    assert captured["home"] == str(tmp_path / "models" / "_cache" / "huggingface")
-    assert captured["endpoint"] == "https://hf-mirror.com"
