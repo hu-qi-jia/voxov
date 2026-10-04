@@ -47,21 +47,20 @@ def _wav1s(tmp_path):
 def test_hide_hides_main_window_too(win, qtbot):
     w, _ = win
     w.show()
-    w.overlay.show()
     w._on_hide()
-    assert not w.isVisible() and not w.overlay.isVisible()
+    assert not w.isVisible()
     w._on_hide()
-    assert w.isVisible() and w.overlay.isVisible()
+    assert w.isVisible()
 
 
-# --- I1：隐藏态触发热键不得弹出悬浮窗 ---
-def test_hotkey_while_hidden_keeps_overlay_hidden(win, qtbot):
+# --- I1：隐藏态触发热键仍照常生成（无悬浮窗，无可见面） ---
+def test_hotkey_while_hidden_still_generates(win, qtbot):
     w, rag = win
-    w.overlay.show()
+    w.show()
     w._on_hide()
     w._on_hotkey()
     qtbot.waitUntil(lambda: rag.triggered == 1, timeout=3000)
-    assert not w.overlay.isVisible()
+    assert not w.isVisible()
 
 
 # --- I2：退出必须真正结束进程（清理热钩/管线） ---
@@ -221,4 +220,5 @@ def test_generic_answer_notice_shown_in_overlay(win, qtbot):
     w, rag = win
     rag.last_had_refs = False
     w._on_hotkey()
-    qtbot.waitUntil(lambda: "通用回答" in w.overlay.status_label.text(), timeout=3000)
+    qtbot.waitUntil(lambda: w._chat_answer is not None
+                    and "通用回答" in w._chat_answer.note.text(), timeout=3000)

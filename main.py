@@ -44,6 +44,8 @@ def main() -> int:
     app = QApplication(sys.argv)
     from app.theme import apply as apply_theme
     apply_theme(app)
+    from qfluentwidgets import setTheme, Theme
+    setTheme(Theme.DARK)          # VoxRecall/DSH 暗色体系
     app.setQuitOnLastWindowClosed(False)
     cfg, kb, rag, recorder, rehearsal_factory = build_app()
     # 单实例：两个实例同时自动下载同一目录会互相破坏

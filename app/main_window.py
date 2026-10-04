@@ -9,7 +9,6 @@ from qfluentwidgets import (FluentWindow, FluentIcon as FIF, PushButton,
                             CardWidget, SubtitleLabel, CaptionLabel, InfoBar,
                             InfoBarPosition)
 
-from app.overlay import OverlayWindow
 from app.ui_chat import ChatPage
 
 
@@ -40,8 +39,6 @@ class MainWindow(FluentWindow):
         self._rag = None
         self._rehearsal_rag = None
         self._recorder = None
-        self.overlay = OverlayWindow()
-        self._main_answer_buf = ""
         self._chat_answer = None        # 当前对话流回答气泡
         self._last_utterance = ""       # 最近一句面试官语音（自动作答用）
         self.subtitle_sig.connect(self._on_subtitle)
@@ -248,7 +245,6 @@ class MainWindow(FluentWindow):
         """急隐藏（spec §6.5/§1）：一切可见痕迹消失。"""
         self._hidden = not self._hidden
         self.setVisible(not self._hidden)
-        self.overlay.setVisible(not self._hidden)
         if self.tray is not None:
             self.tray.setVisible(not self._hidden)
 
@@ -286,7 +282,7 @@ class MainWindow(FluentWindow):
             self._pipeline.stop()
             self._pipeline = None
             self._set_listen_btn("开始监听")
-            self.overlay.show_status("已停止监听")
+            self._info("ok", "已停止监听", "")
             return
         if self._load_worker is not None and self._load_worker.isRunning():
             return
@@ -362,11 +358,8 @@ class MainWindow(FluentWindow):
             self._pipeline.on_subtitle = self.subtitle_sig.emit
             self._pipeline.on_error = self.audio_error_sig.emit
             self._pipeline.start()
-            self.overlay.show()
             self._set_listen_btn("停止监听" if not self._pending_rehearse else "开始监听")
             self.switchTo(self.chat_page)
-            self.overlay.show_status(
-                "彩排中" if self._pending_rehearse else "监听中", ok=True)
         except Exception as exc:
             self._info("error", "启动失败", str(exc))
             self._set_listen_btn("开始监听")
@@ -379,7 +372,6 @@ class MainWindow(FluentWindow):
         self._pipeline = None
         self._set_listen_btn("开始监听")
         self._info("error", "音频异常，已停止监听", f"{m}（可重新点“开始监听”）")
-        self.overlay.show_status("音频异常，已停止监听")
 
     def _active_rag(self):
         """审查 I7：热键作用于当前活跃会话（彩排中 → 彩排会话）。"""
@@ -394,21 +386,17 @@ class MainWindow(FluentWindow):
             self._pipeline.flush_pending()
         if self._active_rag() is None:
             self._rag = self._rag_factory()
-        if not self._hidden:
-            self.overlay.show()
         self._chat_answer = self.chat_page.begin_answer(
             self._last_utterance or "（手动触发生成）")
         self._worker = GenerateWorker(self._active_rag())
         self._worker.question.connect(self._on_question)
         self._worker.chunk.connect(self._on_chunk)
         self._worker.notice.connect(self._on_notice)
-        self._worker.done.connect(lambda: self.overlay.end_answer())
         self._worker.failed.connect(lambda m: self._info("error", "生成失败", f"{m}，可重试"))
         self._worker.start()
 
     # ---- 字幕/问答双写：对话流留档 + 悬浮窗实时 ----
     def _on_subtitle(self, t: str) -> None:
-        self.overlay.set_subtitle(t)
         self.chat_page.add_interviewer(t)
         self._last_utterance = t
         from core.heuristics import looks_like_question
@@ -418,18 +406,15 @@ class MainWindow(FluentWindow):
                 self._on_hotkey()
 
     def _on_question(self, q: str) -> None:
-        if q:
-            self.overlay.begin_answer(q)
-        else:
-            self.overlay.show_status("未识别到问题（稍后再按）")
+        if not q:
+            if self._chat_answer is not None:
+                self._chat_answer.note.setText("未识别到问题（稍后再按）")
 
     def _on_chunk(self, delta: str) -> None:
-        self.overlay.append_answer(delta)
         if self._chat_answer is not None:
             self._chat_answer.append(delta)
             self.chat_page.scroll_to_bottom()
 
     def _on_notice(self, m: str) -> None:
-        self.overlay.show_status(m)
         if self._chat_answer is not None:
             self._chat_answer.note.setText(m)

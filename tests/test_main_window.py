@@ -45,10 +45,11 @@ def test_hotkey_signal_triggers_generate(win, qtbot):
     w._on_hotkey()
     qtbot.waitUntil(lambda: rag.triggered == 1, timeout=3000)
 
-def test_generate_worker_streams_to_overlay(win, qtbot):
+def test_generate_worker_streams_to_chat_bubble(win, qtbot):
     w, rag = win
     w._on_hotkey()
-    qtbot.waitUntil(lambda: "答" in w.overlay.answer_view.toPlainText(), timeout=3000)
+    qtbot.waitUntil(lambda: w._chat_answer is not None
+                    and "答" in w._chat_answer.view.toPlainText(), timeout=3000)
 
 def test_delete_selected_file(win, qtbot):
     w, _ = win
@@ -68,13 +69,13 @@ def test_settings_dialog_roundtrip(win, qtbot, tmp_path):
     cfg2 = load_config(w.cfg.data_dir)
     assert cfg2.llm_base_url == "https://api.x.com/v1" and cfg2.llm_model == "m1"
 
-def test_hide_hotkey_toggles_overlay(win, qtbot):
+def test_hide_hotkey_toggles_main_window(win, qtbot):
     w, _ = win
-    w.overlay.show()
+    w.show()
     w._on_hide()
-    assert not w.overlay.isVisible()
+    assert not w.isVisible()
     w._on_hide()
-    assert w.overlay.isVisible()
+    assert w.isVisible()
 
 def test_hotkey_flushes_pending_pipeline(win, qtbot):
     # spec §6.6：热键路径必须先强刷管线 pending 语音再提取问题

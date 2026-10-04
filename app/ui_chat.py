@@ -1,56 +1,90 @@
-# app/ui_chat.py —— 监听页：对话流（面试官气泡 + 回答气泡），qfluentwidgets 组件。
+# app/ui_chat.py —— 监听页：对话流（VoxRecall/DSH 风格——头像+角色标签+分向气泡）。
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QHBoxLayout, QLabel, QTextBrowser, QVBoxLayout,
-                               QWidget, QSizePolicy)
+                               QWidget)
 
 from qfluentwidgets import (FluentIcon as FIF, ScrollArea, PushButton,
                             SwitchButton, SubtitleLabel, StrongBodyLabel,
-                            CaptionLabel, CardWidget, BodyLabel)
+                            CaptionLabel, BodyLabel, CardWidget)
 
 
-class Bubble(CardWidget):
-    """对话气泡基类：垂直排列的卡片。"""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._lay = QVBoxLayout(self)
-        self._lay.setContentsMargins(14, 10, 14, 12)
-        self._lay.setSpacing(4)
-
-
-class InterviewerBubble(Bubble):
-    """面试官：左对齐浅灰卡片。"""
+class InterviewerBubble(QWidget):
+    """面试官：右对齐，圆形头像在右，layer-3 圆角卡（DSH user 气泡）。"""
 
     def __init__(self, text: str, parent=None):
         super().__init__(parent)
-        self.setMaximumWidth(640)
-        tag = CaptionLabel("面试官", self)
-        tag.setStyleSheet("color: #8e8e93;")
-        self._lay.addWidget(tag)
-        body = BodyLabel(text, self)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(48, 0, 0, 0)
+        row.setSpacing(10)
+        col = QVBoxLayout()
+        col.setSpacing(4)
+        role = CaptionLabel("面试官", self)
+        role.setObjectName("bubble_role")
+        role.setAlignment(Qt.AlignRight)
+        col.addWidget(role)
+        card = CardWidget(self)
+        card.setStyleSheet("background: #353638; border: 1px solid #3d3d40;"
+                           "border-radius: 10px;")
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(14, 10, 14, 10)
+        body = BodyLabel(text, card)
         body.setWordWrap(True)
         body.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self._lay.addWidget(body)
+        cl.addWidget(body)
+        col.addWidget(card)
+        row.addStretch(1)
+        row.addLayout(col)
+        avatar = QLabel("面", self)
+        avatar.setObjectName("bubble_avatar")
+        avatar.setFixedSize(30, 30)
+        avatar.setAlignment(Qt.AlignCenter)
+        avatar.setStyleSheet("background: #2c2c2e; color: #adb2b8;"
+                             "border: 1px solid #3d3d40;")
+        row.addWidget(avatar, 0, Qt.AlignTop)
 
 
-class AnswerBubble(Bubble):
-    """回答：标题（问题）+ markdown 流式正文。"""
+class AnswerBubble(QWidget):
+    """回答：左对齐，蓝圈头像在左，layer-1 卡（DSH ai 气泡）+ markdown 流式正文。
+    正文为空时显示「正在生成…」占位，首个分块到达即清除。"""
 
     def __init__(self, question: str, parent=None):
         super().__init__(parent)
-        self.setMaximumWidth(720)
-        tag = StrongBodyLabel(question, self)
-        tag.setWordWrap(True)
-        self._lay.addWidget(tag)
-        self.view = QTextBrowser(self)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 48, 0)
+        row.setSpacing(10)
+        avatar = QLabel("答", self)
+        avatar.setObjectName("bubble_avatar")
+        avatar.setFixedSize(30, 30)
+        avatar.setAlignment(Qt.AlignCenter)
+        avatar.setStyleSheet("background: #1f2740; color: #7aaaff;"
+                             "border: 1px solid #34415b;")
+        row.addWidget(avatar, 0, Qt.AlignTop)
+        col = QVBoxLayout()
+        col.setSpacing(4)
+        role = CaptionLabel("助手", self)
+        role.setObjectName("bubble_role")
+        col.addWidget(role)
+        card = CardWidget(self)
+        card.setStyleSheet("background: #232324; border: 1px solid #2c2c2e;"
+                           "border-radius: 10px;")
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(14, 10, 14, 10)
+        cl.setSpacing(6)
+        title = StrongBodyLabel(question, card)
+        title.setWordWrap(True)
+        cl.addWidget(title)
+        self.view = QTextBrowser(card)
         self.view.setObjectName("answer")
         self.view.setOpenExternalLinks(False)
-        self.view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        self.view.setMinimumHeight(40)
-        self._lay.addWidget(self.view)
-        self.note = CaptionLabel("", self)
-        self.note.setStyleSheet("color: #b54708;")
-        self._lay.addWidget(self.note)
+        self.view.setMinimumHeight(24)
+        self.view.setPlaceholderText("正在生成…")
+        cl.addWidget(self.view)
+        self.note = CaptionLabel("", card)
+        self.note.setObjectName("bubble_note")
+        self.note.setWordWrap(True)
+        cl.addWidget(self.note)
+        col.addWidget(card)
+        row.addLayout(col, 1)
         self._buf = ""
 
     def append(self, delta: str) -> None:
@@ -88,10 +122,10 @@ class ChatPage(QWidget):
         self.scroll.setWidgetResizable(True)
         self.scroll.enableTransparentBackground()
         self.feed = QWidget()
-        self.feed.setStyleSheet("background: #ffffff;")
+        self.feed.setObjectName("feed")
         self.feed_lay = QVBoxLayout(self.feed)
         self.feed_lay.setContentsMargins(0, 0, 16, 8)
-        self.feed_lay.setSpacing(10)
+        self.feed_lay.setSpacing(12)
         self.feed_lay.addStretch(1)
         self.scroll.setWidget(self.feed)
         root.addWidget(self.scroll, 1)
@@ -99,22 +133,15 @@ class ChatPage(QWidget):
     # ---- 对话流 API ----
     def add_interviewer(self, text: str) -> InterviewerBubble:
         b = InterviewerBubble(text)
-        self._insert(b)
+        self.feed_lay.insertWidget(self.feed_lay.count() - 1, b)
+        self.scroll_to_bottom()
         return b
 
     def begin_answer(self, question: str) -> AnswerBubble:
         b = AnswerBubble(question)
-        self._insert(b)
+        self.feed_lay.insertWidget(self.feed_lay.count() - 1, b)
+        self.scroll_to_bottom()
         return b
-
-    def _insert(self, w: QWidget) -> None:
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.addWidget(w, 0, Qt.AlignLeft)
-        self.feed_lay.insertWidget(self.feed_lay.count() - 1, w)
-        sb = self.scroll.verticalScrollBar()
-        sb.setValue(sb.maximum())
-        self._tail_rows = getattr(self, "_tail_rows", []) + [row]
 
     def scroll_to_bottom(self) -> None:
         sb = self.scroll.verticalScrollBar()

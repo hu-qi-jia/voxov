@@ -28,7 +28,6 @@ def win(qtbot, tmp_path, monkeypatch):
     rag = _Rag()
     w = MainWindow(default_config(), kb_factory=lambda: _Kb(), rag_factory=lambda: rag)
     qtbot.addWidget(w)
-    qtbot.addWidget(w.overlay)
     return w, rag
 
 
@@ -56,7 +55,6 @@ def test_subtitle_dual_write(win):
     w, _ = win
     for t in ("第一句", "第二句", "第三句", "第四句"):
         w.subtitle_sig.emit(t)
-    assert "第一句" not in w.overlay.subtitle_label.text()   # 悬浮窗只留 3 条
     from qfluentwidgets import BodyLabel
     labels = [lb.text() for lb in w.chat_page.feed.findChildren(BodyLabel)]
     assert "第一句" in labels and "第四句" in labels          # 主窗全量留档
@@ -71,7 +69,6 @@ def test_answer_streams_into_chat_bubble(win):
     w._on_question("Redis 持久化")
     w._on_chunk("**RDB** 是快照。")
     assert "RDB" in w._chat_answer.view.toPlainText()
-    assert "Redis 持久化" in w.overlay.question_label.text()
 
 
 # --- 自动作答：像问题才触发，开关可关 ---
@@ -92,20 +89,6 @@ def test_auto_answer_skips_smalltalk_and_can_be_disabled(win, monkeypatch):
     w.chat_page.auto_switch.setChecked(False)
     w.subtitle_sig.emit("说说 MySQL 索引")
     assert fired == []
-
-
-# --- 悬浮窗必须可关闭（✕ / Esc） ---
-def test_overlay_close_button_and_esc(win):
-    w, _ = win
-    w.overlay.show()
-    assert w.overlay.isVisible()
-    w.overlay.close_btn.click()
-    assert not w.overlay.isVisible()
-    w.overlay.show()
-    from PySide6.QtCore import QEvent, Qt
-    from PySide6.QtGui import QKeyEvent
-    w.overlay.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
-    assert not w.overlay.isVisible()
 
 
 # --- 音频异常：管线复位 + InfoBar 浮出 ---

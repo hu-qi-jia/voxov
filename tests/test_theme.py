@@ -1,23 +1,24 @@
-# tests/test_theme.py —— Codex 浅色设计系统：令牌齐全、QSS 覆盖核心控件
+# tests/test_theme.py —— DSH 暗色设计系统（VoxRecall 同源）：令牌齐全、QSS 覆盖核心控件
 from app.theme import TOKENS, build_qss
 
 
 def test_tokens_complete():
-    need = {"bg", "field", "hover", "active", "pill", "border", "text",
-            "text_dim", "ok", "danger", "radius", "font"}
+    need = {"bg", "layer1", "layer2", "layer3", "border", "text", "text_dim",
+            "accent", "ok", "warn", "danger", "radius", "font"}
     assert need <= set(TOKENS)
 
 
-def test_light_theme_pill_is_near_black():
-    # Codex 参考图：黑胶囊选中态 + 浅色场
-    assert TOKENS["pill"] == "#1a1a1a"
-    assert TOKENS["field"] == "#f7f7f8"
+def test_dsh_dark_palette():
+    # VoxRecall/DSH：950 底 + 分层面板 + 蓝强调
+    assert TOKENS["bg"] == "#151517"
+    assert TOKENS["layer1"] == "#232324"
+    assert TOKENS["layer3"] == "#353638"
+    assert TOKENS["accent"] == "#7aaaff"
 
 
 def test_qss_covers_core_widgets_and_states():
     qss = build_qss()
-    for sel in ("QMainWindow", "QDialog", "QLabel#subtitle", "QLabel#question",
-                "QLabel#status", "QTextBrowser#answer", "QWidget#overlay",
-                "QWidget#sidebar", "QPushButton#nav", "QToolButton#overlay_close",
-                "QLabel#model_status[state=\"ok\"]"):
+    for sel in ("QMainWindow", "QDialog", "QLabel#bubble_role", "QLabel#bubble_avatar",
+                "QLabel#bubble_note", "QTextBrowser#answer", "QWidget#feed",
+                "QPushButton[accent=\"true\"]"):
         assert sel in qss, f"QSS 缺少 {sel}"
