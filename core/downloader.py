@@ -16,12 +16,17 @@ def models_ready(models_dir: Path) -> bool:
 
 
 def _download_modelscope(repo: str, dest: Path, log: Callable[[str], None]) -> None:
+    # 缓存重定位到应用 models/_cache：用户主目录常被安全软件（受控文件夹访问）
+    # 拦下 WinError 5 → E1022；且打包版保持自包含。setdefault 必须在 import 前——
+    # modelscope SDK 在 import 期就创建缓存目录（E1022 发生处）。
+    os.environ.setdefault("MODELSCOPE_CACHE", str(dest.parent / "_cache" / "modelscope"))
     from modelscope import snapshot_download
     snapshot_download(repo, local_dir=str(dest))
 
 
 def _download_hf(repo: str, dest: Path, log: Callable[[str], None]) -> None:
     os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+    os.environ.setdefault("HF_HOME", str(dest.parent / "_cache" / "huggingface"))
     from huggingface_hub import snapshot_download
     snapshot_download(repo, local_dir=str(dest))
 

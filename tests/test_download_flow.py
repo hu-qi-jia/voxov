@@ -291,3 +291,43 @@ def test_rehearsal_also_gated_when_models_missing(win, qtbot, monkeypatch, tmp_p
     win.start_rehearsal(tmp_path / "x.wav")
     assert win._pipeline is None
     assert opened == [1]
+
+
+# --- 缓存重定位：绝不写用户主目录（安全软件拦 WinError 5，E1022） ---
+def test_modelscope_cache_relocated_into_models_dir(monkeypatch, tmp_path):
+    import os
+    import sys
+    import types
+    captured = {}
+    fake = types.ModuleType("modelscope")
+
+    def snapshot_download(repo, local_dir=None):
+        captured["cache"] = os.environ.get("MODELSCOPE_CACHE")
+
+    fake.snapshot_download = snapshot_download
+    monkeypatch.setitem(sys.modules, "modelscope", fake)
+    monkeypatch.delenv("MODELSCOPE_CACHE", raising=False)
+    dl._download_modelscope("iic/x", tmp_path / "models" / "SenseVoiceSmall",
+                            lambda m: None)
+    assert captured["cache"] == str(tmp_path / "models" / "_cache" / "modelscope")
+
+
+def test_hf_cache_relocated_into_models_dir(monkeypatch, tmp_path):
+    import os
+    import sys
+    import types
+    captured = {}
+    fake = types.ModuleType("huggingface_hub")
+
+    def snapshot_download(repo, local_dir=None):
+        captured["home"] = os.environ.get("HF_HOME")
+        captured["endpoint"] = os.environ.get("HF_ENDPOINT")
+
+    fake.snapshot_download = snapshot_download
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake)
+    monkeypatch.delenv("HF_HOME", raising=False)
+    monkeypatch.delenv("HF_ENDPOINT", raising=False)
+    dl._download_hf("BAAI/x", tmp_path / "models" / "bge-small-zh-v1.5",
+                    lambda m: None)
+    assert captured["home"] == str(tmp_path / "models" / "_cache" / "huggingface")
+    assert captured["endpoint"] == "https://hf-mirror.com"
