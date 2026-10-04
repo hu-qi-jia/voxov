@@ -13,11 +13,15 @@
 ## Global Constraints
 
 - Python ≥ 3.11（FTS5 trigram 需 SQLite ≥ 3.34；**禁用 audioop**——3.13 已移除，重采样一律 numpy）
-- 目标平台 Windows 11；音频采集走 WASAPI loopback（pyaudiowpatch）
+- 目标平台 Windows 11；音频采集走 WASAPI loopback（pyaudiowpatch）；**仅采集系统音频，绝不采集麦克风**（spec §2.1）
 - 默认目录：`<项目根>/models/` 与 `<项目根>/data/`，设置页可改；两者必须保持 `.gitignore` 排除
 - 模型下载默认镜像 `HF_ENDPOINT=https://hf-mirror.com`
 - LLM 参数固定：temperature=0.3, max_tokens=500；检索 top5；RRF k=60
-- 默认热键 `ctrl+alt+space`，设置页可改
+- 默认热键 `ctrl+alt+space`；急隐藏热键 `ctrl+alt+h`（均可设置页改）
+- **对外痕迹中性化**：窗口标题 "Notes"、托盘 tooltip "Notes"、打包 exe/进程名 `notes-viewer`（spec §6.5）
+- **热键路径必须先 `flush_pending()` 再提取问题**（spec §6.6 竞态修复）
+- UI 为唯一暗色主题，令牌集中于 `app/theme.py`；界面零解释性文案，只留操作标签与状态词（spec §6.8）
+- 全部配置集中在 SettingsDialog；主窗口不放任何散落配置控件（spec §6.7）
 - System 提示词必须与 spec §6.3 逐字一致
 - 无鉴权、无用户体系；单机单用户
 - pytest 默认跳过真实模型测试：`addopts = -m "not model"`；`model` 标记的测试需本机已下载模型
@@ -42,7 +46,7 @@
 - Test: `tests/test_config.py`
 
 **Interfaces:**
-- Produces: `AppConfig` dataclass（字段：`root: Path`, `models_dir: Path`, `data_dir: Path`, `kb_path: Path`, `sessions_dir: Path`, `llm_base_url: str`, `llm_api_key: str`, `llm_model: str`, `hotkey: str="ctrl+alt+space"`）；`default_config() -> AppConfig`；`load_config(data_dir) -> AppConfig`；`save_config(cfg) -> None`（JSON 存 `data_dir/config.json`，缺省字段用默认值合并）。后续所有任务经 `AppConfig` 取路径。
+- Produces: `AppConfig` dataclass（字段：`root: Path`, `models_dir: Path`, `data_dir: Path`, `kb_path: Path`, `sessions_dir: Path`, `llm_base_url: str`, `llm_api_key: str`, `llm_model: str`, `hotkey: str="ctrl+alt+space"`, `hide_hotkey: str="ctrl+alt+h"`, `audio_device: str=""`——空串=系统默认输出）；`default_config() -> AppConfig`；`load_config(data_dir) -> AppConfig`；`save_config(cfg) -> None`（JSON 存 `data_dir/config.json`，缺省字段用默认值合并）。后续所有任务经 `AppConfig` 取路径。
 
 - [ ] **Step 1: 写 pyproject.toml**
 
@@ -85,6 +89,8 @@ def test_default_config_uses_project_root(tmp_path, monkeypatch):
     assert cfg.data_dir == tmp_path / "data"
     assert cfg.kb_path == tmp_path / "data" / "kb.db"
     assert cfg.hotkey == "ctrl+alt+space"
+    assert cfg.hide_hotkey == "ctrl+alt+h"
+    assert cfg.audio_device == ""
     assert cfg.llm_base_url == ""
 
 def test_save_then_load_roundtrip(tmp_path, monkeypatch):
@@ -143,6 +149,8 @@ class AppConfig:
     llm_api_key: str = ""
     llm_model: str = ""
     hotkey: str = "ctrl+alt+space"
+    hide_hotkey: str = "ctrl+alt+h"
+    audio_device: str = ""  # 空 = 系统默认输出设备
 
     def ensure_dirs(self) -> None:
         self.models_dir.mkdir(parents=True, exist_ok=True)
@@ -1857,7 +1865,7 @@ git commit -m "feat: FunASR SenseVoice 转写封装（富标签清理）+ Fake �
 
 **Interfaces:**
 - Consumes: `AudioSource`（Task 11/12）、`Transcriber`（Task 13）、`SessionBuffer`/`TranscriptEntry`（Task 6）、`SessionRecorder`（Task 7）
-- Produces: `AudioPipeline(source, transcriber, buffer: SessionBuffer, recorder: SessionRecorder | None = None, silence_sec: float = 1.2, min_speech_sec: float = 0.4)`，Qt 无关的纯线程类：`.start() -> threading.Thread`、`.stop()`；回调 `.on_subtitle: Callable[[str], None] | None`（新转写文本，UI 订阅）、`.on_error: Callable[[str], None] | None`。能量 VAD：`rms > 500` 视为语音。Task 16 消费。
+- Produces: `AudioPipeline(source, transcriber, buffer: SessionBuffer, recorder: SessionRecorder | None = None, silence_sec: float = 1.2, min_speech_sec: float = 0.4)`，Qt 无关的纯线程类：`.start() -> threading.Thread`、`.stop()`、**`.flush_pending() -> None`（spec §6.6 竞态修复：热键路径先调它，立即转写静音等待期内的 pending 语音）**；回调 `.on_subtitle: Callable[[str], None] | None`（新转写文本，UI 订阅）、`.on_error: Callable[[str], None] | None`。能量 VAD：`rms > 500` 视为语音；语音缓冲以 `._speech_lock` 保护。Task 16 消费。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -1925,6 +1933,28 @@ def test_pipeline_records_transcript(tmp_path):
     p.start().join(timeout=30)
     assert len(rec.transcripts) == 1
 
+def test_flush_pending_drains_speech_buffer(tmp_path):
+    # spec §6.6 竞态：语音尚未达静音阈值（管线仍在等待），热键路径强刷应立即产出
+    wav = tmp_path / "e.wav"; make_wav(wav)
+    p = AudioPipeline(WavFileSource(wav), FakeTranscriber("刚说完的问题"), SessionBuffer())
+    speech = (np.ones(16000, dtype=np.int16) * 4000).tobytes()  # 1s 语音，rms>500
+    with p._speech_lock:  # 注入 pending 状态（等价于静音等待期）
+        p._speech = [speech]
+        p._speech_start = 100.0
+    p._last_activity = 101.0
+    p.flush_pending()
+    assert len(p.buffer.entries) == 1
+    assert p.buffer.entries[0].text == "刚说完的问题"
+    with p._speech_lock:
+        assert p._speech == []  # 已清空，不会重复转写
+
+def test_flush_pending_noop_when_idle(tmp_path):
+    wav = tmp_path / "f.wav"; make_wav(wav)
+    buf = SessionBuffer()
+    p = AudioPipeline(WavFileSource(wav), FakeTranscriber("x"), buf)
+    p.flush_pending()  # 无 pending：安全空转
+    assert buf.entries == []
+
 def test_pipeline_transcriber_error_calls_on_error(tmp_path):
     wav = tmp_path / "d.wav"; make_wav(wav)
     errs = []
@@ -1978,6 +2008,10 @@ class AudioPipeline:
         self.on_subtitle: Callable[[str], None] | None = None
         self.on_error: Callable[[str], None] | None = None
         self._stop = threading.Event()
+        self._speech: list[bytes] = []
+        self._speech_start: float | None = None
+        self._speech_lock = threading.Lock()
+        self._last_activity = time.time()
 
     def start(self) -> threading.Thread:
         t = threading.Thread(target=self.run, daemon=True)
@@ -1989,9 +2023,6 @@ class AudioPipeline:
         self.source.stop()
 
     def run(self) -> None:
-        speech: list[bytes] = []
-        speech_start: float | None = None
-        last_activity = time.time()
         try:
             for block in self.source.chunks():
                 if self._stop.is_set():
@@ -1999,20 +2030,34 @@ class AudioPipeline:
                 now = time.time()
                 block_dur = len(block) / 2 / self.source.sample_rate
                 if rms(block) > 500:  # 语音
-                    if not speech:
-                        speech_start = now - block_dur
-                    speech.append(block)
-                    last_activity = now
-                elif speech:  # 静音且缓冲有语音
-                    if now - last_activity >= self.silence_sec:
-                        self._flush(speech, speech_start, last_activity)
-                        speech, speech_start = [], None
+                    with self._speech_lock:
+                        if not self._speech:
+                            self._speech_start = now - block_dur
+                        self._speech.append(block)
+                    self._last_activity = now
+                else:
+                    with self._speech_lock:
+                        has_pending = bool(self._speech)
+                    if has_pending and now - self._last_activity >= self.silence_sec:
+                        self._drain_and_flush()
                 time.sleep(0)  # 让出 GIL
-            if speech:
-                self._flush(speech, speech_start, last_activity)
+            self._drain_and_flush()
         except Exception as exc:  # 设备拔出等
             if self.on_error:
                 self.on_error(str(exc))
+
+    def _drain_and_flush(self) -> None:
+        """锁内摘下 pending 语音，锁外转写（避免长时间持锁阻塞采集线程）。"""
+        with self._speech_lock:
+            blocks, start = self._speech, self._speech_start
+            self._speech, self._speech_start = [], None
+        if blocks and start is not None:
+            self._flush(blocks, start, self._last_activity)
+
+    def flush_pending(self) -> None:
+        """热键路径专用（spec §6.6）：立即转写未达静音阈值的 pending 语音，
+        保证提取的问题包含面试官刚说完的最后一句。"""
+        self._drain_and_flush()
 
     def _flush(self, blocks: list[bytes], start: float | None, end: float) -> None:
         if start is None:
@@ -2049,17 +2094,38 @@ git commit -m "feat: 实时音频管线（能量 VAD 分段→转写→缓冲/�
 
 ---
 
-### Task 15: 置顶悬浮窗 OverlayWindow
+### Task 15: 设计系统（theme.py）+ 置顶悬浮窗 OverlayWindow
 
 **Files:**
-- Create: `app/overlay.py`
-- Test: `tests/test_overlay.py`（pytest-qt）
+- Create: `app/theme.py`, `app/overlay.py`
+- Test: `tests/test_theme.py`, `tests/test_overlay.py`（pytest-qt）
 
 **Interfaces:**
 - Consumes: 无（纯 UI）
-- Produces: `OverlayWindow(QWidget)`：`set_subtitle(text: str)`（滚动字幕区，显示最近 3 条）、`begin_answer(question: str)`（清空答案区、显示问题标题）、`append_answer(chunk: str)`（流式追加，Markdown 渲染加粗）、`end_answer()`、`show_status(text: str)`（如"未识别到问题""音频已切换到 XXX"）。窗口标志 `FramelessWindowHint | WindowStaysOnTopHint | Tool`，`setWindowOpacity(0.92)`，鼠标拖动移动。Task 16 消费。
+- Produces:
+  - `app/theme.py`：`TOKENS: dict`（设计令牌）、`build_qss() -> str`（全组件 QSS，含 hover/pressed/disabled/focus 四态）、`apply(app) -> None`。Task 16 起所有 UI 消费；**禁止在控件上写内联 setStyleSheet 十六进制色**（spec §6.8）
+  - `OverlayWindow(QWidget)`：`set_subtitle(text: str)`（滚动字幕区，最近 3 条）、`begin_answer(question: str)`、`append_answer(chunk: str)`（流式追加）、`end_answer()`、`show_status(text: str)`（状态词，如"未识别到问题"）、`hide()/show()`（QWidget 自带，供急隐藏用）。窗口标志 `FramelessWindowHint | WindowStaysOnTopHint | Tool`，窗口标题 **"Notes"**（spec §6.5 中性化），`setWindowOpacity(0.92)`，鼠标拖动移动。Task 16 消费。
 
 - [ ] **Step 1: 写失败测试（pytest-qt）**
+
+```python
+# tests/test_theme.py
+from app.theme import TOKENS, build_qss
+
+def test_tokens_complete():
+    need = {"bg", "surface", "elevated", "border", "text", "text_dim",
+            "accent", "danger", "radius", "font"}
+    assert need <= set(TOKENS)
+
+def test_qss_covers_core_widgets_and_states():
+    qss = build_qss()
+    for sel in ("QMainWindow", "QDialog", "QLabel#subtitle", "QLabel#question",
+                "QLabel#status", "QTextBrowser#answer", "QWidget#overlay",
+                "QPushButton", "QLineEdit", "QComboBox", "QTableView", "QMenu"):
+        assert sel in qss
+    for state in (":hover", ":pressed", ":disabled", ":focus"):
+        assert state in qss
+```
 
 ```python
 # tests/test_overlay.py
@@ -2119,23 +2185,90 @@ def test_drag_moves_window(overlay):
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `python -m pytest tests/test_overlay.py -v` → FAIL
+Run: `python -m pytest tests/test_overlay.py tests/test_theme.py -v` → FAIL
 
-- [ ] **Step 3: 实现**
+- [ ] **Step 3: 实现（先主题，后悬浮窗）**
+
+```python
+# app/theme.py —— 设计系统（spec §6.8）：唯一暗色主题，令牌集中，QSS 统一生成。
+TOKENS = {
+    "bg":             "#0d0f12",   # 窗体背景
+    "surface":        "#16181d",   # 面板/输入框
+    "elevated":       "#1e2127",   # 悬浮层/hover
+    "border":         "#2a2d34",
+    "text":           "#ececf1",
+    "text_dim":       "#9aa0aa",
+    "accent":         "#10a37f",   # 单一强调色
+    "accent_hover":   "#0e8f6f",
+    "accent_pressed": "#0c7f62",
+    "danger":         "#ef4444",
+    "radius":         "10px",
+    "radius_sm":      "6px",
+    "font":           "'Segoe UI', 'Microsoft YaHei UI', 13px",
+    "font_sm":        "'Segoe UI', 'Microsoft YaHei UI', 12px",
+}
+
+
+def build_qss() -> str:
+    t = TOKENS
+    return f"""
+    QMainWindow, QDialog {{ background: {t['bg']}; font: {t['font']}; }}
+    QWidget {{ color: {t['text']}; font: {t['font']}; }}
+    QLabel#subtitle {{ color: {t['text_dim']}; font: {t['font_sm']}; }}
+    QLabel#question {{ color: {t['text']}; font-weight: 600; }}
+    QLabel#status {{ color: {t['danger']}; font: {t['font_sm']}; }}
+    QWidget#overlay {{ background: {t['surface']}; border: 1px solid {t['border']};
+        border-radius: {t['radius']}; }}
+    QTextBrowser#answer {{ background: {t['elevated']}; border: none;
+        border-radius: {t['radius_sm']}; padding: 8px; }}
+    QLineEdit, QComboBox {{ background: {t['surface']}; border: 1px solid {t['border']};
+        border-radius: {t['radius_sm']}; padding: 6px 8px;
+        selection-background-color: {t['accent']}; }}
+    QLineEdit:focus, QComboBox:focus {{ border-color: {t['accent']}; }}
+    QLineEdit:disabled, QComboBox:disabled {{ color: {t['text_dim']}; }}
+    QPushButton {{ background: {t['surface']}; border: 1px solid {t['border']};
+        border-radius: {t['radius_sm']}; padding: 7px 14px; color: {t['text']}; }}
+    QPushButton:hover {{ background: {t['elevated']}; }}
+    QPushButton:pressed {{ background: {t['border']}; }}
+    QPushButton:disabled {{ color: {t['text_dim']}; background: {t['bg']}; }}
+    QPushButton[accent="true"] {{ background: {t['accent']}; border: none; color: #ffffff; }}
+    QPushButton[accent="true"]:hover {{ background: {t['accent_hover']}; }}
+    QPushButton[accent="true"]:pressed {{ background: {t['accent_pressed']}; }}
+    QTableView {{ background: {t['surface']}; border: 1px solid {t['border']};
+        border-radius: {t['radius']}; gridline-color: {t['border']}; }}
+    QTableView::item {{ padding: 6px; }}
+    QTableView::item:selected {{ background: {t['accent']}; color: #ffffff; }}
+    QHeaderView::section {{ background: {t['elevated']}; border: none;
+        border-bottom: 1px solid {t['border']}; padding: 6px; color: {t['text_dim']}; }}
+    QMenu {{ background: {t['surface']}; border: 1px solid {t['border']};
+        border-radius: {t['radius_sm']}; }}
+    QMenu::item {{ padding: 6px 20px; }}
+    QMenu::item:selected {{ background: {t['elevated']}; }}
+    QScrollBar:vertical {{ background: transparent; width: 8px; }}
+    QScrollBar::handle:vertical {{ background: {t['border']}; border-radius: 4px; }}
+    """
+
+
+def apply(app) -> None:
+    app.setStyleSheet(build_qss())
+```
 
 ```python
 # app/overlay.py
 from PySide6.QtCore import Qt, QPoint
 from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import (QApplication, QLabel, QTextBrowser, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import QLabel, QTextBrowser, QVBoxLayout, QWidget
 
 
 class OverlayWindow(QWidget):
-    """置顶悬浮窗：字幕区 + 问题标题 + 流式答案（spec §2 展示形态）。"""
+    """置顶悬浮窗：字幕区 + 问题标题 + 流式答案（spec §2/§6.5/§6.8）。"""
 
     def __init__(self) -> None:
         super().__init__(None,
             Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setWindowTitle("Notes")           # 对外中性标题（spec §6.5）
+        self.setObjectName("overlay")
+        self.setAttribute(Qt.WA_StyledBackground, True)  # 让 QSS 背景生效
         self.setWindowOpacity(0.92)
         self.resize(460, 320)
         self._subtitles: list[str] = []
@@ -2143,15 +2276,16 @@ class OverlayWindow(QWidget):
 
         lay = QVBoxLayout(self)
         self.subtitle_label = QLabel("(等待音频…)")
+        self.subtitle_label.setObjectName("subtitle")
         self.subtitle_label.setWordWrap(True)
-        self.subtitle_label.setStyleSheet("color:#888; font-size:12px;")
         self.question_label = QLabel("")
+        self.question_label.setObjectName("question")
         self.question_label.setWordWrap(True)
-        self.question_label.setStyleSheet("font-weight:bold; font-size:13px;")
         self.answer_view = QTextBrowser()
+        self.answer_view.setObjectName("answer")
         self.answer_view.setOpenExternalLinks(False)
         self.status_label = QLabel("")
-        self.status_label.setStyleSheet("color:#c0392b; font-size:12px;")
+        self.status_label.setObjectName("status")
         lay.addWidget(self.subtitle_label)
         lay.addWidget(self.question_label)
         lay.addWidget(self.answer_view, stretch=1)
@@ -2192,26 +2326,31 @@ class OverlayWindow(QWidget):
 
 - [ ] **Step 4: 跑测试通过**
 
-Run: `python -m pytest tests/test_overlay.py -v` → PASS
+Run: `python -m pytest tests/test_overlay.py tests/test_theme.py -v` → PASS
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add app/overlay.py tests/test_overlay.py
-git commit -m "feat: 置顶悬浮窗（字幕滚动/流式答案/拖动）"
+git add app/theme.py app/overlay.py tests/test_theme.py tests/test_overlay.py
+git commit -m "feat: 暗色设计系统与置顶悬浮窗（字幕滚动/流式答案/拖动）"
 ```
 
 ---
 
-### Task 16: 主窗口（知识库管理+设置+会话控制）+ 热键 + 托盘 + main.py 组装
+### Task 16: 主窗口（知识库管理+会话控制）+ 设置页 + 热键（含急隐藏）+ 托盘 + main.py 组装
 
 **Files:**
-- Create: `app/main_window.py`, `app/hotkey.py`, `app/tray.py`, `main.py`
+- Create: `app/main_window.py`, `app/settings_dialog.py`, `app/hotkey.py`, `app/tray.py`, `main.py`
 - Test: `tests/test_main_window.py`（pytest-qt，用 fakes 不碰模型/网络）
 
 **Interfaces:**
-- Consumes: 全部前序任务的接口；`downloader.ensure_models`（Task 17 将提供——本任务先写 `models_ready(cfg) -> bool` 检查目录存在性，缺失时提示去 Task 17 的向导）
-- Produces: 可启动的 `main.py`；`MainWindow(cfg, kb_factory, rag_factory)`（依赖注入便于测试）；`HotkeyBridge`（`pressed = Signal()`，keyboard 库回调线程→Qt 信号）；`GenerateWorker(QThread)`（`chunk = Signal(str)`, `done = Signal()`, `failed = Signal(str)`，后台消费 `RagService.trigger()`）。
+- Consumes: 全部前序任务的接口（含 Task 15 的 `theme.apply`）；`downloader.ensure_models`（Task 17 将提供——本任务先写 `models_ready(cfg) -> bool` 检查目录存在性，缺失时提示去 Task 17 的向导）
+- Produces:
+  - 可启动的 `main.py`（启动时 `theme.apply(app)`）
+  - `MainWindow(cfg, kb_factory, rag_factory)`（依赖注入便于测试）；`_on_hotkey()` 先调 `self._pipeline.flush_pending()`（spec §6.6）；`_on_hide()` 急隐藏切换（spec §6.5）；`self.tray` 由 main.py 注入
+  - `SettingsDialog(cfg, parent=None)`（spec §6.7 全部配置集中：LLM 三项、模型/数据目录、触发热键、急隐藏热键、音频设备下拉）；`_save()` 写回 AppConfig 并持久化
+  - `HotkeyBridge(combo, hide_combo)`：`pressed = Signal()` + `hidden = Signal()`，keyboard 回调线程→Qt 信号
+  - `GenerateWorker(QThread)`：`chunk = Signal(str)`, `question = Signal(str)`, `done = Signal()`, `failed = Signal(str)`
 
 - [ ] **Step 1: 写失败测试**
 
@@ -2258,7 +2397,7 @@ def test_kb_table_lists_files(win):
 def test_hotkey_signal_triggers_generate(win, qtbot):
     w, rag = win
     w._on_hotkey()
-    assert rag.triggered == 1
+    qtbot.waitUntil(lambda: rag.triggered == 1, timeout=3000)
 
 def test_generate_worker_streams_to_overlay(win, qtbot):
     w, rag = win
@@ -2271,14 +2410,43 @@ def test_delete_selected_file(win, qtbot):
     w._delete_selected()
     assert w.kb_table.model().rowCount() == 1
 
-def test_settings_roundtrip(win, qtbot, tmp_path):
+def test_settings_dialog_roundtrip(win, qtbot, tmp_path):
+    from app.settings_dialog import SettingsDialog
     w, _ = win
-    w.base_url_edit.setText("https://api.x.com/v1")
-    w.model_edit.setText("m1")
-    w._save_settings()
+    dlg = SettingsDialog(w.cfg, parent=w)
+    dlg.base_url_edit.setText("https://api.x.com/v1")
+    dlg.model_edit.setText("m1")
+    dlg.hide_hotkey_edit.setText("ctrl+alt+h")
+    dlg._save()
     from core.config import load_config
     cfg2 = load_config(w.cfg.data_dir)
     assert cfg2.llm_base_url == "https://api.x.com/v1" and cfg2.llm_model == "m1"
+
+def test_hide_hotkey_toggles_overlay(win, qtbot):
+    w, _ = win
+    w.overlay.show()
+    w._on_hide()
+    assert not w.overlay.isVisible()
+    w._on_hide()
+    assert w.overlay.isVisible()
+
+def test_hotkey_flushes_pending_pipeline(win, qtbot):
+    # spec §6.6：热键路径必须先强刷管线 pending 语音再提取问题
+    w, rag = win
+    flushed = []
+    class FakePipeline:
+        def flush_pending(self):
+            flushed.append(1)
+    w._pipeline = FakePipeline()
+    w._on_hotkey()
+    assert flushed == [1]  # 同步调用，触发前必须完成
+    qtbot.waitUntil(lambda: rag.triggered == 1, timeout=3000)
+
+def test_main_window_has_no_inline_config_controls(win, qtbot):
+    # spec §6.7：主窗口不放散落配置控件，设置集中在 SettingsDialog
+    w, _ = win
+    assert not hasattr(w, "base_url_edit") and not hasattr(w, "_save_settings")
+    assert hasattr(w, "_open_settings")
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -2293,13 +2461,17 @@ from PySide6.QtCore import QObject, Signal
 
 
 class HotkeyBridge(QObject):
-    """keyboard 库的回调跑在独立线程；经 Qt 信号（队列连接） marshal 到主线程。"""
+    """keyboard 库的回调跑在独立线程；经 Qt 信号（队列连接） marshal 到主线程。
+    pressed = 触发生成；hidden = 急隐藏切换（spec §6.5）。"""
     pressed = Signal()
+    hidden = Signal()
 
-    def __init__(self, combo: str = "ctrl+alt+space") -> None:
+    def __init__(self, combo: str = "ctrl+alt+space",
+                 hide_combo: str = "ctrl+alt+h") -> None:
         super().__init__()
         import keyboard
         keyboard.add_hotkey(combo, self.pressed.emit)
+        keyboard.add_hotkey(hide_combo, self.hidden.emit)
 
     def stop(self) -> None:
         import keyboard
@@ -2339,11 +2511,101 @@ class GenerateWorker(QThread):
 ```
 
 ```python
+# app/settings_dialog.py —— 全部配置集中于此（spec §6.7）；主窗口仅"设置"入口。
+from pathlib import Path
+
+from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFileDialog,
+                               QFormLayout, QHBoxLayout, QLineEdit, QPushButton,
+                               QVBoxLayout, QWidget)
+
+from core.config import AppConfig, save_config
+
+
+class SettingsDialog(QDialog):
+    def __init__(self, cfg: AppConfig, parent=None) -> None:
+        super().__init__(parent)
+        self.cfg = cfg
+        self.setWindowTitle("设置")
+        self.setMinimumWidth(520)
+        form = QFormLayout()
+
+        # LLM
+        self.base_url_edit = QLineEdit(cfg.llm_base_url)
+        self.api_key_edit = QLineEdit(cfg.llm_api_key)
+        self.api_key_edit.setEchoMode(QLineEdit.Password)
+        self.model_edit = QLineEdit(cfg.llm_model)
+        form.addRow("Base URL", self.base_url_edit)
+        form.addRow("API Key", self.api_key_edit)
+        form.addRow("模型", self.model_edit)
+
+        # 目录
+        self.models_dir_edit = QLineEdit(str(cfg.models_dir))
+        self.data_dir_edit = QLineEdit(str(cfg.data_dir))
+        for edit, title in ((self.models_dir_edit, "模型目录"), (self.data_dir_edit, "数据目录")):
+            row = QHBoxLayout()
+            row.addWidget(edit)
+            pick = QPushButton("…")
+            pick.setFixedWidth(32)
+            pick.clicked.connect(lambda _=False, e=edit, t=title: self._pick_dir(e, t))
+            row.addWidget(pick)
+            wrap = QWidget()
+            wrap.setLayout(row)
+            form.addRow(title, wrap)
+
+        # 热键
+        self.hotkey_edit = QLineEdit(cfg.hotkey)
+        self.hide_hotkey_edit = QLineEdit(cfg.hide_hotkey)
+        form.addRow("触发热键", self.hotkey_edit)
+        form.addRow("急隐藏热键", self.hide_hotkey_edit)
+
+        # 音频设备
+        self.device_combo = QComboBox()
+        self._load_devices()
+        form.addRow("音频设备", self.device_combo)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._save)
+        buttons.rejected.connect(self.reject)
+        lay = QVBoxLayout(self)
+        lay.addLayout(form)
+        lay.addWidget(buttons)
+
+    def _load_devices(self) -> None:
+        self.device_combo.addItem("系统默认", "")
+        try:
+            from core.capture import list_loopback_devices
+            for d in list_loopback_devices():
+                label = d["name"] + ("（默认）" if d.get("default") else "")
+                self.device_combo.addItem(label, d["name"])
+        except Exception:
+            pass  # 无音频环境仅保留"系统默认"
+        idx = self.device_combo.findData(self.cfg.audio_device)
+        self.device_combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+    def _pick_dir(self, edit: QLineEdit, title: str) -> None:
+        d = QFileDialog.getExistingDirectory(self, title, edit.text() or str(Path.home()))
+        if d:
+            edit.setText(d)
+
+    def _save(self) -> None:
+        self.cfg.llm_base_url = self.base_url_edit.text().strip()
+        self.cfg.llm_api_key = self.api_key_edit.text().strip()
+        self.cfg.llm_model = self.model_edit.text().strip()
+        self.cfg.models_dir = Path(self.models_dir_edit.text())
+        self.cfg.data_dir = Path(self.data_dir_edit.text())
+        self.cfg.hotkey = self.hotkey_edit.text().strip() or "ctrl+alt+space"
+        self.cfg.hide_hotkey = self.hide_hotkey_edit.text().strip() or "ctrl+alt+h"
+        self.cfg.audio_device = self.device_combo.currentData() or ""
+        save_config(self.cfg)
+        self.accept()
+```
+
+```python
 # app/main_window.py（核心逻辑；样式从简）
 from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QStandardItemModel, QStandardItem
-from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QLineEdit,
+from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel,
                                QMainWindow, QPushButton, QTableView, QVBoxLayout, QWidget)
 
 from app.overlay import OverlayWindow
@@ -2359,7 +2621,10 @@ class MainWindow(QMainWindow):
         self._recorder = None  # main.py 注入；未注入时导出按钮禁用逻辑依赖它
         self.overlay = OverlayWindow()
         self._worker = None
-        self.setWindowTitle("面试助手")
+        self._pipeline = None
+        self.tray = None      # main.py 注入（急隐藏需要同时藏托盘）
+        self._hidden = False
+        self.setWindowTitle("Notes")   # 对外中性标题（spec §6.5）
         self.resize(720, 480)
         self._build_ui()
         self._reload_kb()
@@ -2367,38 +2632,28 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         central = QWidget()
         lay = QVBoxLayout(central)
-        # 知识库区
+        # 知识库区（文案极简：spec §6.8 只留操作标签与状态词）
         self.kb_table = QTableView()
         self.kb_model = QStandardItemModel(0, 2)
         self.kb_model.setHorizontalHeaderLabels(["文件", "块数"])
         self.kb_table.setModel(self.kb_model)
-        lay.addWidget(QLabel("知识库（上传 md）"))
+        lay.addWidget(QLabel("知识库"))
         lay.addWidget(self.kb_table)
         row = QHBoxLayout()
-        upload_btn = QPushButton("上传 md…")
+        upload_btn = QPushButton("上传")
         upload_btn.clicked.connect(self._upload)
-        del_btn = QPushButton("删除选中")
+        del_btn = QPushButton("删除")
         del_btn.clicked.connect(self._delete_selected)
-        export_btn = QPushButton("导出面试记录")
+        export_btn = QPushButton("导出")
         export_btn.clicked.connect(self._export_session)
-        start_btn = QPushButton("开始监听")
+        start_btn = QPushButton("监听")
+        start_btn.setProperty("accent", True)
         start_btn.clicked.connect(self.start_listening)
-        for b in (upload_btn, del_btn, export_btn, start_btn):
+        settings_btn = QPushButton("设置")
+        settings_btn.clicked.connect(self._open_settings)
+        for b in (upload_btn, del_btn, export_btn, start_btn, settings_btn):
             row.addWidget(b)
         lay.addLayout(row)
-        # 设置区
-        lay.addWidget(QLabel("LLM 设置（OpenAI 兼容）"))
-        form = QHBoxLayout()
-        self.base_url_edit = QLineEdit(self.cfg.llm_base_url)
-        self.api_key_edit = QLineEdit(self.cfg.llm_api_key)
-        self.api_key_edit.setEchoMode(QLineEdit.Password)
-        self.model_edit = QLineEdit(self.cfg.llm_model)
-        for lbl, w in (("base_url", self.base_url_edit), ("api_key", self.api_key_edit), ("模型", self.model_edit)):
-            form.addWidget(QLabel(lbl)); form.addWidget(w, stretch=1)
-        save_btn = QPushButton("保存设置")
-        save_btn.clicked.connect(self._save_settings)
-        form.addWidget(save_btn)
-        lay.addLayout(form)
         self.setCentralWidget(central)
 
     def _reload_kb(self) -> None:
@@ -2424,13 +2679,18 @@ class MainWindow(QMainWindow):
         self._kb_factory().delete_file(name)
         self._reload_kb()
 
-    def _save_settings(self) -> None:
-        from core.config import save_config
-        self.cfg.llm_base_url = self.base_url_edit.text().strip()
-        self.cfg.llm_api_key = self.api_key_edit.text().strip()
-        self.cfg.llm_model = self.model_edit.text().strip()
-        save_config(self.cfg)
-        self.statusBar().showMessage("设置已保存")
+    def _open_settings(self) -> None:
+        from app.settings_dialog import SettingsDialog
+        dlg = SettingsDialog(self.cfg, parent=self)
+        if dlg.exec():
+            self.statusBar().showMessage("已保存")
+
+    def _on_hide(self) -> None:
+        """急隐藏（spec §6.5）：悬浮窗+托盘同时隐/显，再按一次恢复。"""
+        self._hidden = not self._hidden
+        self.overlay.setVisible(not self._hidden)
+        if self.tray is not None:
+            self.tray.setVisible(not self._hidden)
 
     def _export_session(self) -> None:
         from PySide6.QtWidgets import QFileDialog
@@ -2450,6 +2710,8 @@ class MainWindow(QMainWindow):
         from app.workers import GenerateWorker
         if self._worker is not None and self._worker.isRunning():
             return  # 上一轮未完成，忽略连按
+        if self._pipeline is not None:
+            self._pipeline.flush_pending()  # spec §6.6：先强刷 pending 语音再提取问题
         if self._rag is None:
             self._rag = self._rag_factory()
         self.overlay.show()
@@ -2504,14 +2766,18 @@ def build_app():
 
 def main() -> int:
     app = QApplication(sys.argv)
+    from app.theme import apply as apply_theme
+    apply_theme(app)
     app.setQuitOnLastWindowClosed(False)
     cfg, kb, rag, recorder = build_app()
     win = MainWindow(cfg, kb_factory=lambda: kb, rag_factory=lambda: rag)
     win._recorder = recorder
     win.show()
-    bridge = HotkeyBridge(cfg.hotkey)
+    bridge = HotkeyBridge(cfg.hotkey, cfg.hide_hotkey)
     bridge.pressed.connect(win._on_hotkey)
+    bridge.hidden.connect(win._on_hide)   # 急隐藏（spec §6.5）
     tray = create_tray(win)
+    win.tray = tray
     return app.exec()
 
 
@@ -2535,7 +2801,7 @@ def create_tray(win) -> QSystemTrayIcon:
     menu.addAction(show)
     menu.addAction(quit_)
     tray.setContextMenu(menu)
-    tray.setToolTip("面试助手")
+    tray.setToolTip("Notes")   # 对外中性 tooltip（spec §6.5）
     tray.show()
     return tray
 ```
@@ -2557,16 +2823,19 @@ git commit -m "feat: 主窗口/热键/托盘/流式生成接线（依赖注入�
 
 ---
 
-### Task 17: 模型下载向导 + 完整监听接线（联调任务）
+### Task 17: 模型下载向导 + 完整监听/彩排接线（联调任务）
 
 **Files:**
 - Create: `core/downloader.py`, `app/wizard.py`
-- Modify: `app/main_window.py`（`start_listening` 接 LiveAudioSource+FunasrTranscriber+AudioPipeline；托盘/主窗口加"下载模型"入口）
-- Test: `tests/test_downloader.py`（mock 下载函数）
+- Modify: `app/main_window.py`（`start_listening` 接 LiveAudioSource+FunasrTranscriber+AudioPipeline；`_build_ui` 按钮行加"彩排"按钮；托盘/主窗口加"下载模型"入口）
+- Test: `tests/test_downloader.py`（mock 下载函数）, `tests/test_rehearsal.py`
 
 **Interfaces:**
-- Consumes: `AppConfig.models_dir`（Task 1）、`AudioPipeline`（Task 14）、`LiveAudioSource`（Task 12）、`FunasrTranscriber`（Task 13）
-- Produces: `ensure_models(models_dir: Path, log: Callable[[str], None]) -> None`（下载 4 组模型：modelscope 的 SenseVoiceSmall/fsmn-vad/ct-punc + HF 的 bge-small-zh-v1.5；逐项调用前 emit 日志行）；`models_ready(models_dir) -> bool`；`ModelWizard(QDialog)`（日志区+开始按钮，QThread 跑 `ensure_models`）。`MainWindow.start_listening()` 组装真实管线。
+- Consumes: `AppConfig.models_dir`（Task 1）、`AudioPipeline`（Task 14）、`LiveAudioSource`/`WavFileSource`（Task 11/12）、`FunasrTranscriber`（Task 13）
+- Produces:
+  - `ensure_models(models_dir: Path, log: Callable[[str], None]) -> None`（下载 4 组模型：modelscope 的 SenseVoiceSmall/fsmn-vad/ct-punc + HF 的 bge-small-zh-v1.5；逐项调用前 emit 日志行）；`models_ready(models_dir) -> bool`；`ModelWizard(QDialog)`（日志区+开始按钮，QThread 跑 `ensure_models`）
+  - `MainWindow.start_listening()` 组装真实监听管线
+  - `MainWindow.start_rehearsal(wav_path: Path) -> None`（spec §5④ 彩排模式：WavFileSource 按真实时长回放，其余链路与监听完全一致）
 
 - [ ] **Step 1: 写失败测试**
 
@@ -2605,9 +2874,68 @@ def test_ensure_models_skips_existing(tmp_path, monkeypatch):
     assert len(n) == 3  # 只下载缺失的 3 个
 ```
 
+```python
+# tests/test_rehearsal.py —— 彩排模式（spec §5④）：wav 回放走完整实时链路
+import wave
+import numpy as np
+import pytest
+from app.main_window import MainWindow
+
+
+class _Rag:
+    def __init__(self):
+        from core.session import SessionBuffer
+        self.buffer = SessionBuffer()
+    def trigger(self):
+        yield ""
+
+
+class _Kb:
+    def list_files(self):
+        return []
+
+
+@pytest.fixture
+def win2(qtbot, tmp_path, monkeypatch):
+    import core.config as cc
+    cc.app_root = lambda: tmp_path
+    from core.config import default_config
+    cfg = default_config()
+    w = MainWindow(cfg, kb_factory=_Kb, rag_factory=_Rag)
+    qtbot.addWidget(w)
+    return w
+
+
+def _wav(tmp_path):
+    p = tmp_path / "r.wav"
+    with wave.open(str(p), "wb") as f:
+        f.setnchannels(1); f.setsampwidth(2); f.setframerate(16000)
+        f.writeframes((np.ones(16000) * 4000).astype(np.int16).tobytes())  # 1s 语音
+    return p
+
+
+def test_start_rehearsal_builds_pipeline_and_transcribes(win2, qtbot, tmp_path, monkeypatch):
+    wav = _wav(tmp_path)
+
+    class FakeTranscriber:
+        def transcribe(self, pcm, sample_rate=16000):
+            return "彩排文本"
+
+    import core.transcriber as tr
+    monkeypatch.setattr(tr, "FunasrTranscriber", lambda models_dir: FakeTranscriber())
+    win2.start_rehearsal(wav)
+    assert win2._pipeline is not None
+    qtbot.waitUntil(lambda: len(win2._rag.buffer.entries) == 1, timeout=15000)
+    assert win2._rag.buffer.entries[0].text == "彩排文本"
+    win2._pipeline.stop()
+
+def test_rehearsal_button_exists(win2):
+    assert win2.rehearse_btn is not None
+```
+
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `python -m pytest tests/test_downloader.py -v` → FAIL
+Run: `python -m pytest tests/test_downloader.py tests/test_rehearsal.py -v` → FAIL
 
 - [ ] **Step 3: 实现**
 
@@ -2723,8 +3051,8 @@ class ModelWizard(QDialog):
             return
         transcriber = FunasrTranscriber(self.cfg.models_dir)
         source = LiveAudioSource()
-        rag = self._rag or self._rag_factory()
-        self._pipeline = AudioPipeline(source, transcriber, rag.buffer, recorder=self._recorder)
+        self._rag = self._rag or self._rag_factory()
+        self._pipeline = AudioPipeline(source, transcriber, self._rag.buffer, recorder=self._recorder)
         self._pipeline.on_subtitle = self.subtitle_sig.emit  # 管线线程安全 emit
         self._pipeline.on_error = self.audio_error_sig.emit
         self._pipeline.start()
@@ -2732,23 +3060,58 @@ class ModelWizard(QDialog):
         self.statusBar().showMessage("监听中：系统音频 → 字幕；Ctrl+Alt+Space 触发回答")
 ```
 
+`_build_ui` 的按钮行追加彩排按钮（放在"监听"旁），并在 MainWindow 追加彩排方法：
+
+```python
+    # _build_ui 的按钮行（Task 16 的 row）追加：
+    #   self.rehearse_btn = QPushButton("彩排")
+    #   self.rehearse_btn.clicked.connect(self._rehearse_clicked)
+
+    def _rehearse_clicked(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+        from pathlib import Path as P
+        path, _ = QFileDialog.getOpenFileName(self, "选择录音", "", "Wave (*.wav)")
+        if path:
+            self.start_rehearsal(P(path))
+
+    def start_rehearsal(self, wav_path) -> None:
+        """彩排模式（spec §5④）：wav 按真实时长回放，链路与监听完全一致，
+        不接真实设备——首次真实面试前用它全链路验证。"""
+        from core.capture import WavFileSource
+        from core.pipeline import AudioPipeline
+        from core.transcriber import FunasrTranscriber
+        if self._pipeline is not None:
+            self._pipeline.stop()
+        transcriber = FunasrTranscriber(self.cfg.models_dir)
+        self._rag = self._rag or self._rag_factory()
+        self._pipeline = AudioPipeline(WavFileSource(wav_path), transcriber,
+                                       self._rag.buffer, recorder=self._recorder)
+        self._pipeline.on_subtitle = self.subtitle_sig.emit
+        self._pipeline.on_error = self.audio_error_sig.emit
+        self._pipeline.start()
+        self.overlay.show()
+        self.statusBar().showMessage("彩排中")
+```
+
 - [ ] **Step 4: 跑测试 + 真机联调**
 
-Run: `python -m pytest tests/test_downloader.py -v` → PASS
+Run: `python -m pytest tests/test_downloader.py tests/test_rehearsal.py -v` → PASS
 
 真机联调清单（手工，需已下载模型+配置 LLM key）：
-1. `python main.py` → 主窗口出现
+1. `python main.py` → 主窗口出现（暗色主题生效，标题 "Notes"）
 2. 托盘/按钮"下载模型"向导可用
 3. 上传一份八股 md → 表格出现
 4. 开始监听 → 播放一段含问题的会议录音/视频 → 悬浮窗出字幕
-5. `Ctrl+Alt+Space` → ≤2s 出首字，答案为口语化分点
-6. 导出面试记录 → md 含问答与来源
+5. `Ctrl+Alt+Space` → ≤2s 出首字，答案为口语化分点；**问题文本包含面试官刚说完的最后一句**（验证 §6.6 强刷）
+6. `Ctrl+Alt+H` → 悬浮窗+托盘 <100ms 消失，再按恢复
+7. 彩排：选 wav → 字幕/检索/答案全链路正常，状态显示"彩排中"
+8. 导出面试记录 → md 含问答与来源
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add core/downloader.py app/wizard.py app/main_window.py tests/test_downloader.py
-git commit -m "feat: 模型下载向导与真实监听接线（联调通过）"
+git add core/downloader.py app/wizard.py app/main_window.py tests/test_downloader.py tests/test_rehearsal.py
+git commit -m "feat: 模型向导、真实监听与彩排模式接线（联调通过）"
 ```
 
 ---
@@ -2785,22 +3148,22 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True,
-          name="interview-assistant", debug=False,
+          name="notes-viewer", debug=False,   # 对外中性名（spec §6.5）
           bootloader_ignore_signals=False, strip=False, upx=False, console=False)
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False,
-              name="interview-assistant")
+              name="notes-viewer")
 ```
 
 - [ ] **Step 2: 打包并验证**
 
 Run: `pip install pyinstaller && pyinstaller interview-assistant.spec`
-Expected: `dist/interview-assistant/interview-assistant.exe` 生成
+Expected: `dist/notes-viewer/notes-viewer.exe` 生成
 
-手工验证：把 `dist/interview-assistant/` 拷到独立目录，放入/下载 `models/`、`data/`，双击 exe：主窗口、悬浮窗、热键全链路可用。
+手工验证：把 `dist/notes-viewer/` 拷到独立目录，放入/下载 `models/`、`data/`，双击 exe：主窗口、悬浮窗、热键全链路可用；Alt-Tab 与任务管理器中只见 `notes-viewer`。
 
 - [ ] **Step 3: 写 README**
 
-覆盖：项目简介、截图占位、安装（源码运行 + 打包版）、模型首次下载说明（0.5GB、hf-mirror）、LLM 配置示例（DeepSeek/OpenAI 兼容）、热键说明、路径配置（models/ data/ 可在设置改）、开源协议（建议 MIT）、免责声明（仅供个人学习与面试练习用途，使用者自担合规风险）。
+覆盖：项目简介、截图占位、安装（源码运行 + 打包版）、模型首次下载说明（0.5GB、hf-mirror）、LLM 配置示例（DeepSeek/OpenAI 兼容，均在设置页）、**音频范围声明（仅采集系统音频，不采集麦克风）**、热键说明（触发/急隐藏）、**彩排模式用法（首次真实使用前必读）**、路径配置（models/ data/ 可在设置改）、**API key 明文存储提示**、开源协议（建议 MIT）、免责声明（仅供个人学习与练习用途，使用者自担合规风险）。
 
 - [ ] **Step 4: 全量回归**
 
@@ -2825,9 +3188,18 @@ Task3(Embedder) ↗ Task4, Task5
 Task6(缓冲/提取) ↗ Task10, Task14
 Task7(记录导出) ↗ Task10, Task16
 Task8+9(Prompt/LLM) ↗ Task10
-Task11(wav源) → Task12(live源) → Task14(管线) ↗ Task16
+Task11(wav源) → Task12(live源) → Task14(管线含flush_pending) ↗ Task16(热键强刷), Task17(彩排)
 Task13(转写器) ↗ Task14
-Task15(悬浮窗) ↗ Task16
+Task15(设计系统+悬浮窗) ↗ Task16(主题apply), Task17(急隐藏作用于悬浮窗)
 ```
 
 串行执行按 Task 编号即可（编号已拓扑排序）；并行执行时按依赖图分四条泳道：知识库线(2→3→4→5)、生成线(8→9)、音频线(11→12→13→14)、UI 线(15)，最后 10/16/17/18 汇合。
+
+## v1.1 变更记录（第三方评审后）
+
+- 新增急隐藏层（spec §6.5）：`hide_hotkey` 配置、`HotkeyBridge.hidden`、`MainWindow._on_hide`、窗口/托盘/exe 中性命名（Task 1/15/16/18）
+- 修复热键竞态（spec §6.6）：`AudioPipeline.flush_pending()` + 语音锁，热键路径先强刷再提取（Task 14/16）
+- 新增彩排模式（spec §5④）：`start_rehearsal` 复用 WavFileSource 完整链路（Task 17）
+- 设置集中页（spec §6.7）：`SettingsDialog`，主窗口去散落配置控件（Task 16）
+- UI 设计系统（spec §6.8）：`app/theme.py` 令牌 + 全组件 QSS 四态，零解释性文案（Task 15/16）
+- 音频范围显式化（spec §2.1）：仅系统音频，无麦克风（全局约束）
