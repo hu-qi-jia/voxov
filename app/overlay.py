@@ -52,6 +52,14 @@ class OverlayWindow(QWidget):
         self.status_label.setWordWrap(True)
         lay.addWidget(self.status_label)
 
+        # 默认落位屏幕右上角，不遮挡主窗口内容
+        try:
+            from PySide6.QtWidgets import QApplication
+            scr = QApplication.primaryScreen().availableGeometry()
+            self.move(scr.right() - self.width() - 28, scr.top() + 64)
+        except Exception:
+            pass
+
     def keyPressEvent(self, e) -> None:
         from PySide6.QtCore import Qt as _Qt
         if e.key() == _Qt.Key_Escape:
@@ -92,8 +100,11 @@ class OverlayWindow(QWidget):
         # “通用回答（知识库无命中）”瞬间抹掉。状态由 begin_answer 重置。
         pass
 
-    def show_status(self, text: str) -> None:
+    def show_status(self, text: str, ok: bool = False) -> None:
         self.status_label.setText(text)
+        # 非错误信息用功能绿，默认（错误）走主题红
+        self.status_label.setStyleSheet(
+            "color: #0d8a5f; font-weight: 600;" if ok else "")
 
     # --- 拖动 ---
     def mousePressEvent(self, e: QMouseEvent) -> None:

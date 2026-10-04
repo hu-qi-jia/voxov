@@ -1,7 +1,8 @@
-# tests/test_main_window_ui.py —— 主窗口重构：左导航（知识库置顶）+ 右侧页面 + 字幕/问答双写
+# tests/test_main_window_ui.py —— Fluent 壳 + 对话流监听页（qfluentwidgets 重构后）
 import pytest
 
 from app.main_window import MainWindow
+from app.ui_chat import AnswerBubble, InterviewerBubble
 
 
 class _Rag:
@@ -9,8 +10,9 @@ class _Rag:
         from core.session import SessionBuffer, SessionRecorder
         self.buffer = SessionBuffer()
         self.recorder = SessionRecorder()
+
     def trigger(self):
-        yield "a"
+        yield "答"
 
 
 class _Kb:
@@ -30,65 +32,94 @@ def win(qtbot, tmp_path, monkeypatch):
     return w, rag
 
 
-# --- 导航结构：左栏三页，知识库置顶 ---
-def test_nav_buttons_exist_kb_first(win):
+def test_fluent_pages_exist(win):
     w, _ = win
-    for name in ("nav_kb", "nav_listen", "nav_rehearse"):
-        assert getattr(w, name) is not None
-    side_order = [w.side_layout.itemAt(i).widget() for i in range(w.side_layout.count())]
-    widgets = [x for x in side_order if x is not None]
-    texts = [x.text() for x in widgets if hasattr(x, "text")]
-    assert texts.index("知识库") < texts.index("监听") < texts.index("彩排")
+    assert w.chat_page is not None and w.page_kb is not None and w.page_rehearse is not None
+    assert w.start_btn.text() == "开始监听"
+    assert w.model_status_label is not None
+    assert hasattr(w.chat_page, "auto_switch")
 
 
-def test_nav_click_switches_pages(win):
+def test_chat_bubbles_flow(win):
     w, _ = win
-    w.nav_listen.click()
-    assert w.stack.currentWidget() is w.page_listen
-    w.nav_kb.click()
-    assert w.stack.currentWidget() is w.page_kb
-    w.nav_rehearse.click()
-    assert w.stack.currentWidget() is w.page_rehearse
+    b1 = w.chat_page.add_interviewer("请讲讲 Redis 持久化")
+    assert isinstance(b1, InterviewerBubble)
+    b2 = w.chat_page.begin_answer("Redis 持久化")
+    assert isinstance(b2, AnswerBubble)
+    b2.append("**RDB** 是快照，")
+    b2.append("**AOF** 是日志。")
+    assert "RDB" in b2.view.toPlainText() and "**" not in b2.view.toPlainText()
 
 
-def test_listen_page_holds_start_button_and_streams(win):
-    w, _ = win
-    assert w.page_listen is not None
-    assert w.start_btn.parent() is w.page_listen or w.start_btn in w.page_listen.findChildren(type(w.start_btn))
-
-
-# --- 字幕/问答双写：主窗口记录全量，悬浮窗只留最近 3 条 ---
-def test_subtitle_dual_write_full_history_in_main(win):
+# --- 字幕双写：对话流新增气泡 + 悬浮窗只留最近 3 条 ---
+def test_subtitle_dual_write(win):
     w, _ = win
     for t in ("第一句", "第二句", "第三句", "第四句"):
         w.subtitle_sig.emit(t)
-    main_text = w.subtitle_view.toPlainText()
-    assert "第一句" in main_text and "第四句" in main_text      # 主窗口全量保留
-    assert "第一句" not in w.overlay.subtitle_label.text()       # 悬浮窗只留 3 条
+    assert "第一句" not in w.overlay.subtitle_label.text()   # 悬浮窗只留 3 条
+    from qfluentwidgets import BodyLabel
+    labels = [lb.text() for lb in w.chat_page.feed.findChildren(BodyLabel)]
+    assert "第一句" in labels and "第四句" in labels          # 主窗全量留档
 
 
-def test_question_and_answer_dual_write(win):
+# --- 问答流：块流入当前回答气泡 + 悬浮窗同步 ---
+def test_answer_streams_into_chat_bubble(win):
     w, _ = win
+    w._last_utterance = "讲讲 Redis 持久化"
+    w._on_hotkey()
+    assert w._chat_answer is not None
     w._on_question("Redis 持久化")
     w._on_chunk("**RDB** 是快照。")
-    main_md = w.answer_view.toPlainText()
-    assert "Redis 持久化" in main_md
-    assert "RDB" in main_md and "**" not in main_md              # markdown 渲染
+    assert "RDB" in w._chat_answer.view.toPlainText()
     assert "Redis 持久化" in w.overlay.question_label.text()
 
 
-def test_new_question_starts_new_answer_block(win):
+# --- 自动作答：像问题才触发，开关可关 ---
+def test_auto_answer_triggers_on_question(win, monkeypatch):
     w, _ = win
-    w._on_question("Q1")
-    w._on_chunk("答案一")
-    w._on_question("Q2")
-    w._on_chunk("答案二")
-    md = w.answer_view.toPlainText()
-    assert "Q1" in md and "Q2" in md and "答案一" in md and "答案二" in md
+    fired = []
+    monkeypatch.setattr(w, "_on_hotkey", lambda: fired.append(1))
+    w.subtitle_sig.emit("说说 MySQL 索引")
+    assert fired == [1]
 
 
-# --- 左栏底部：模型状态灯 + 设置/下载模型入口 ---
-def test_sidebar_bottom_controls(win):
+def test_auto_answer_skips_smalltalk_and_can_be_disabled(win, monkeypatch):
     w, _ = win
-    assert w.model_status_label.parent() is not w.statusBar()
-    assert hasattr(w, "settings_btn") and hasattr(w, "wizard_btn")
+    fired = []
+    monkeypatch.setattr(w, "_on_hotkey", lambda: fired.append(1))
+    w.subtitle_sig.emit("好的")
+    assert fired == []
+    w.chat_page.auto_switch.setChecked(False)
+    w.subtitle_sig.emit("说说 MySQL 索引")
+    assert fired == []
+
+
+# --- 悬浮窗必须可关闭（✕ / Esc） ---
+def test_overlay_close_button_and_esc(win):
+    w, _ = win
+    w.overlay.show()
+    assert w.overlay.isVisible()
+    w.overlay.close_btn.click()
+    assert not w.overlay.isVisible()
+    w.overlay.show()
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+    w.overlay.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+    assert not w.overlay.isVisible()
+
+
+# --- 音频异常：管线复位 + InfoBar 浮出 ---
+def test_audio_error_resets_pipeline(win, monkeypatch):
+    w, _ = win
+    infos = []
+    monkeypatch.setattr(w, "_info", lambda *a, **k: infos.append(a))
+    monkeypatch.setattr(w, "_set_listen_btn", lambda *a, **k: None)
+
+    class _P:
+        def stop(self):
+            pass
+
+    w._pipeline = _P()
+    w.audio_error_sig.emit("设备被占用")
+    assert w._pipeline is None
+    assert any(a and a[0] == "error" and "设备被占用" in a[2] for a in infos)

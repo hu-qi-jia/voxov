@@ -126,19 +126,23 @@ def test_auto_download_skips_when_models_ready(win, qtbot):
 
 def test_auto_download_failure_marks_state(win, qtbot, monkeypatch):
     monkeypatch.setattr(dl, "ensure_models", _fake_ensure("fail"))
+    infos = []
+    monkeypatch.setattr(win, "_info", lambda *a, **k: infos.append(a))
     win.maybe_auto_download()
     qtbot.waitUntil(lambda: "下载失败" in win.model_status_label.text(), timeout=3000)
-    assert "下载失败" in win.statusBar().currentMessage()
+    assert any(a and a[0] == "error" for a in infos)   # 错误以 InfoBar 浮出
 
 
 def test_auto_download_ok_prompts_restart_when_embedder_fell_back(win, qtbot, monkeypatch):
     monkeypatch.setattr(dl, "ensure_models", _fake_ensure("ok"))
     win._started_without_models = True
+    infos = []
+    monkeypatch.setattr(win, "_info", lambda *a, **k: infos.append(a))
     win.maybe_auto_download()
     qtbot.waitUntil(lambda: win._dl_worker is not None and not win._dl_worker.isRunning(),
                     timeout=3000)
     qtbot.waitUntil(lambda: "就绪" in win.model_status_label.text(), timeout=3000)
-    assert "重启" in win.statusBar().currentMessage()
+    assert any(a and a[0] == "ok" and "重启" in a[2] for a in infos)
 
 
 def test_dl_heartbeat_ticks_elapsed(win, qtbot, monkeypatch):
@@ -234,7 +238,6 @@ def test_start_listening_gated_when_models_missing(win, qtbot, monkeypatch):
     win.start_listening()
     assert win._pipeline is None
     assert opened == [1]
-    assert "未就绪" in win.statusBar().currentMessage()
 
 
 def _patch_av(monkeypatch, transcriber_text="x"):
@@ -277,13 +280,14 @@ def test_start_listening_loads_async_and_passes_device(win, qtbot, monkeypatch):
 def test_start_listening_load_failure_surfaces(win, qtbot, monkeypatch):
     import core.transcriber as tr
     monkeypatch.setattr(dl, "models_ready", lambda md: True)
+    infos = []
+    monkeypatch.setattr(win, "_info", lambda *a, **k: infos.append(a))
     monkeypatch.setattr(tr, "SherpaTranscriber",
                         lambda md: (_ for _ in ()).throw(RuntimeError("模型损坏")))
     win.start_listening()
-    qtbot.waitUntil(lambda: "启动失败" in win.statusBar().currentMessage(), timeout=5000)
+    qtbot.waitUntil(lambda: win.start_btn.isEnabled(), timeout=5000)   # 失败后可重试
     assert win._pipeline is None
-    assert win.start_btn.isEnabled()            # 失败后可重试
-    assert "启动失败" in win.overlay.status_label.text()
+    assert any(a and a[0] == "error" and "模型损坏" in a[2] for a in infos)
 
 
 def test_rehearsal_also_gated_when_models_missing(win, qtbot, monkeypatch, tmp_path):

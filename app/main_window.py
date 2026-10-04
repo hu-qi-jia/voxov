@@ -1,15 +1,31 @@
-# app/main_window.py（核心逻辑；样式从简）
+# app/main_window.py —— 主窗口 v3：FluentWindow 壳 + 对话流监听页（qfluentwidgets）。
 from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QStandardItemModel, QStandardItem
-from PySide6.QtWidgets import (QButtonGroup, QFileDialog, QHBoxLayout, QLabel,
-                               QMainWindow, QPushButton, QStackedWidget, QTableView,
-                               QTextBrowser, QTextEdit, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel,
+                               QPushButton, QTableView, QVBoxLayout, QWidget)
+
+from qfluentwidgets import (FluentWindow, FluentIcon as FIF, PushButton,
+                            CardWidget, SubtitleLabel, CaptionLabel, InfoBar,
+                            InfoBarPosition)
 
 from app.overlay import OverlayWindow
+from app.ui_chat import ChatPage
 
 
-class MainWindow(QMainWindow):
+def _card_page(title: str) -> tuple[QWidget, CardWidget]:
+    page = QWidget()
+    page.setObjectName(title)
+    lay = QVBoxLayout(page)
+    lay.setContentsMargins(28, 24, 28, 20)
+    lay.setSpacing(14)
+    lay.addWidget(SubtitleLabel(title))
+    card = CardWidget(page)
+    lay.addWidget(card)
+    return page, card
+
+
+class MainWindow(FluentWindow):
     # 管线线程 emit → 队列连接回主线程（与 HotkeyBridge 同模式）
     subtitle_sig = Signal(str)
     audio_error_sig = Signal(str)
@@ -23,104 +39,67 @@ class MainWindow(QMainWindow):
         self._rehearsal_rag_factory = rehearsal_rag_factory  # 审查 I7：彩排独立会话
         self._rag = None
         self._rehearsal_rag = None
-        self._recorder = None  # main.py 注入；未注入时导出按钮禁用逻辑依赖它
+        self._recorder = None
         self.overlay = OverlayWindow()
-        self._main_answer_buf = ""      # 主窗口问答流缓冲（与悬浮窗同源双写）
+        self._main_answer_buf = ""
+        self._chat_answer = None        # 当前对话流回答气泡
+        self._last_utterance = ""       # 最近一句面试官语音（自动作答用）
         self.subtitle_sig.connect(self._on_subtitle)
         self.audio_error_sig.connect(self._on_audio_error)
         self._worker = None
         self._pipeline = None
-        self._load_worker = None     # Bug 2/M7：转写器后台加载
+        self._load_worker = None
         self._pending_build = None
         self._pending_rehearse = False
-        self.bridge = None      # rebind_hotkeys() 创建/重建（审查 I3c）
-        self.tray = None        # main.py 注入（急隐藏需要同时藏托盘）
+        self.bridge = None
+        self.tray = None
         self._hidden = False
-        self._dl_worker = None          # 首启自动下载（开箱即用）
+        self._dl_worker = None
         self._dl_heart = None
-        self._started_without_models = False   # main.py 注入：成功后提示重启升级检索
+        self._started_without_models = False
         self.setWindowTitle("Notes")   # 对外中性标题（spec §6.5）
-        self.resize(720, 480)
+        self.resize(1120, 760)
         self._build_ui()
         self._reload_kb()
 
-    # --- UI：左导航（知识库置顶）+ 右侧页面栈（spec §6.8 暗色令牌） ---
+    # ---- UI：Fluent 导航壳 + 三页 ----
     def _build_ui(self) -> None:
-        central = QWidget()
-        root = QHBoxLayout(central)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-
-        side = QWidget()
-        side.setObjectName("sidebar")
-        side.setFixedWidth(220)
-        self.side_layout = QVBoxLayout(side)
-        self.side_layout.setContentsMargins(12, 16, 12, 12)
-        self.side_layout.setSpacing(4)
-        title = QLabel("Notes")          # 对外中性名（spec §6.5）
-        title.setObjectName("side_title")
-        self.side_layout.addWidget(title)
-        self.side_layout.addSpacing(8)
-
-        self.stack = QStackedWidget()
-        self.nav_group = QButtonGroup(self)
-        self.nav_group.setExclusive(True)
+        self.chat_page = ChatPage(self)
+        self.addSubInterface(self.chat_page, FIF.MICROPHONE, "监听")
         self.page_kb = self._build_kb_page()
-        self.page_listen = self._build_listen_page()
+        self.addSubInterface(self.page_kb, FIF.FOLDER, "知识库")
         self.page_rehearse = self._build_rehearse_page()
-        self.nav_kb = self._nav_btn("知识库", self.page_kb)
-        self.nav_listen = self._nav_btn("监听", self.page_listen)
-        self.nav_rehearse = self._nav_btn("彩排", self.page_rehearse)
-        for p in (self.page_kb, self.page_listen, self.page_rehearse):
-            self.stack.addWidget(p)
-        for b in (self.nav_kb, self.nav_listen, self.nav_rehearse):
-            self.nav_group.addButton(b)
-            self.side_layout.addWidget(b)
-        self.side_layout.addStretch(1)
+        self.addSubInterface(self.page_rehearse, FIF.PLAY, "彩排")
 
-        self.model_status_label = QLabel("未下载")
-        self.model_status_label.setObjectName("model_status")
-        self.side_layout.addWidget(self.model_status_label)
-        self.wizard_btn = QPushButton("下载模型")
-        self.wizard_btn.setObjectName("side_small")
-        self.wizard_btn.clicked.connect(self._open_wizard)
-        self.settings_btn = QPushButton("设置")
-        self.settings_btn.setObjectName("side_small")
-        self.settings_btn.clicked.connect(self._open_settings)
-        self.side_layout.addWidget(self.wizard_btn)
-        self.side_layout.addWidget(self.settings_btn)
+        # 别名：既有测试与逻辑引用
+        self.start_btn = self.chat_page.start_btn
+        self.model_status_label = self.chat_page.model_status_label
+        self.start_btn.clicked.connect(self.start_listening)
 
-        root.addWidget(side)
-        root.addWidget(self.stack, 1)
-        self.setCentralWidget(central)
-        self.nav_kb.setChecked(True)
-        self.stack.setCurrentWidget(self.page_kb)
-
-    def _nav_btn(self, text: str, page) -> QPushButton:
-        b = QPushButton(text)
-        b.setObjectName("nav")
-        b.setCheckable(True)
-        b.setCursor(Qt.PointingHandCursor)
-        b.clicked.connect(lambda: self.stack.setCurrentWidget(page))
-        return b
+        self.navigationInterface.addItem(
+            "nav_settings", FIF.SETTING, "设置", selectable=False,
+            onClick=lambda: self._open_settings())
+        self.navigationInterface.addItem(
+            "nav_dl", FIF.DOWNLOAD, "下载模型", selectable=False,
+            onClick=lambda: self._open_wizard())
+        self.switchTo(self.chat_page)
 
     def _build_kb_page(self) -> QWidget:
-        page = QWidget()
-        page.setObjectName("page")
-        lay = QVBoxLayout(page)
-        lay.setContentsMargins(20, 20, 20, 20)
-        lay.setSpacing(10)
+        page, card = _card_page("知识库")
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(16, 12, 16, 16)
         self.kb_table = QTableView()
         self.kb_model = QStandardItemModel(0, 2)
         self.kb_model.setHorizontalHeaderLabels(["文件", "块数"])
         self.kb_table.setModel(self.kb_model)
+        self.kb_table.horizontalHeader().setStretchLastSection(True)
         lay.addWidget(self.kb_table)
         row = QHBoxLayout()
-        upload_btn = QPushButton("上传")
+        upload_btn = PushButton(FIF.ADD, "上传")
         upload_btn.clicked.connect(self._upload)
-        del_btn = QPushButton("删除")
+        del_btn = PushButton(FIF.DELETE, "删除")
         del_btn.clicked.connect(self._delete_selected)
-        export_btn = QPushButton("导出")
+        export_btn = PushButton(FIF.SHARE, "导出")
         export_btn.clicked.connect(self._export_session)
         for b in (upload_btn, del_btn, export_btn):
             row.addWidget(b)
@@ -128,49 +107,16 @@ class MainWindow(QMainWindow):
         lay.addLayout(row)
         return page
 
-    def _build_listen_page(self) -> QWidget:
-        page = QWidget()
-        page.setObjectName("page")
-        lay = QVBoxLayout(page)
-        lay.setContentsMargins(20, 20, 20, 20)
-        lay.setSpacing(10)
-        row = QHBoxLayout()
-        self.start_btn = QPushButton("开始监听")
-        self.start_btn.setProperty("accent", True)
-        self.start_btn.clicked.connect(self.start_listening)
-        row.addWidget(self.start_btn)
-        hint = QLabel("系统音频 → 字幕；Ctrl+Alt+Space 触发回答，急隐藏 Ctrl+Alt+H")
-        hint.setObjectName("hint")
-        row.addWidget(hint, 1)
-        lay.addLayout(row)
-        cap = QLabel("监听内容")
-        cap.setObjectName("hint")
-        lay.addWidget(cap)
-        self.subtitle_view = QTextEdit(readOnly=True)
-        self.subtitle_view.setObjectName("subtitle_view")
-        self.subtitle_view.setPlaceholderText("开始监听后，识别到的语音逐句显示在这里")
-        lay.addWidget(self.subtitle_view, 1)
-        cap2 = QLabel("问题与回答")
-        cap2.setObjectName("hint")
-        lay.addWidget(cap2)
-        self.answer_view = QTextBrowser()
-        self.answer_view.setObjectName("answer")
-        self.answer_view.setOpenExternalLinks(False)
-        lay.addWidget(self.answer_view, 2)
-        return page
-
     def _build_rehearse_page(self) -> QWidget:
-        page = QWidget()
-        page.setObjectName("page")
-        lay = QVBoxLayout(page)
-        lay.setContentsMargins(20, 20, 20, 20)
+        page, card = _card_page("彩排")
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(16, 12, 16, 16)
         lay.setSpacing(10)
-        self.rehearse_btn = QPushButton("选择录音开始彩排")
+        self.rehearse_btn = PushButton(FIF.PLAY, "选择录音开始彩排")
         self.rehearse_btn.clicked.connect(self._rehearse_clicked)
         lay.addWidget(self.rehearse_btn)
-        tip = QLabel("彩排把一段 wav 按真实时长回放，走与监听完全一致的链路，"
-                     "不接真实设备——首次真实面试前用它做全链路验证。")
-        tip.setObjectName("hint")
+        tip = CaptionLabel("彩排把一段 wav 按真实时长回放，走与监听完全一致的链路，"
+                           "不接真实设备——首次真实面试前用它做全链路验证。")
         tip.setWordWrap(True)
         lay.addWidget(tip)
         lay.addStretch(1)
@@ -188,7 +134,7 @@ class MainWindow(QMainWindow):
             try:
                 kb.ingest_file(Path(f))
             except ValueError as exc:
-                self.statusBar().showMessage(str(exc))
+                self._info("error", "导入失败", str(exc))
         self._reload_kb()
 
     def _delete_selected(self) -> None:
@@ -204,7 +150,7 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self.cfg, parent=self)
         if dlg.exec():
             self._apply_settings()
-            self.statusBar().showMessage("已保存")
+            self._info("ok", "已保存", "设置已保存并立即生效")
 
     def _apply_settings(self) -> None:
         """审查 I3：设置保存后立即生效——重建 LLM 客户端、重绑热键。"""
@@ -223,7 +169,7 @@ class MainWindow(QMainWindow):
         try:
             nb = HotkeyBridge(self.cfg.hotkey, self.cfg.hide_hotkey)
         except Exception:
-            self.statusBar().showMessage("热键无效，已回退默认组合")
+            self._info("error", "热键无效", "已回退默认组合")
             nb = HotkeyBridge("ctrl+alt+space", "ctrl+alt+h")
         nb.pressed.connect(self._on_hotkey)
         nb.hidden.connect(self._on_hide)
@@ -233,9 +179,14 @@ class MainWindow(QMainWindow):
         from app.wizard import ModelWizard
         ModelWizard(self._dl_worker_or_start, parent=self).exec()
 
-    # --- 首启自动下载（开箱即用，spec §3/§8） ---
+    def _info(self, kind: str, title: str, content: str) -> None:
+        f = {"ok": InfoBar.success, "error": InfoBar.error,
+             "warn": InfoBar.warning}[kind]
+        f(title=title, content=content, orient=Qt.Horizontal, isClosable=True,
+          position=InfoBarPosition.TOP, duration=5000, parent=self)
+
+    # ---- 首启自动下载（开箱即用） ----
     def maybe_auto_download(self) -> None:
-        """模型缺失时后台自动下载，不弹窗；状态灯反映进度。"""
         from core.downloader import models_ready
         if models_ready(self.cfg.models_dir):
             self._set_model_state("ok")
@@ -243,12 +194,10 @@ class MainWindow(QMainWindow):
         self._dl_worker_or_start()
 
     def _dl_worker_or_start(self):
-        """当前下载 worker；无/已结束则新建并启动（重试=断点续传）。"""
         from app.workers import DownloadWorker
         if self._dl_worker is not None and self._dl_worker.isRunning():
             return self._dl_worker
-        w = DownloadWorker(self.cfg.models_dir,
-                           log_file=self.cfg.data_dir / "download.log")
+        w = DownloadWorker(self.cfg.models_dir)
         w.failed.connect(self._on_dl_failed)
         w.finished_ok.connect(self._on_dl_ok)
         w.progress.connect(self._on_dl_progress)
@@ -264,15 +213,15 @@ class MainWindow(QMainWindow):
     def _on_dl_failed(self, msg: str) -> None:
         self._stop_dl_heart()
         self._set_model_state("err")
-        self.statusBar().showMessage(f"模型下载失败：{msg}（点“下载模型”重试）", 10000)
+        self._info("error", "模型下载失败", f"{msg}（点左侧“下载模型”重试）")
 
     def _on_dl_ok(self) -> None:
         self._stop_dl_heart()
         self._set_model_state("ok")
         if self._started_without_models:
-            self.statusBar().showMessage("模型已就绪；重启应用后知识库启用语义检索", 10000)
+            self._info("ok", "模型已就绪", "重启应用后知识库启用语义检索")
         else:
-            self.statusBar().showMessage("模型已就绪", 5000)
+            self._info("ok", "模型已就绪", "语音识别可用")
 
     def _stop_dl_heart(self) -> None:
         if self._dl_heart is not None:
@@ -296,7 +245,7 @@ class MainWindow(QMainWindow):
         self.model_status_label.style().polish(self.model_status_label)
 
     def _on_hide(self) -> None:
-        """急隐藏（spec §6.5/§1）：一切可见痕迹消失——主窗口+悬浮窗+托盘。"""
+        """急隐藏（spec §6.5/§1）：一切可见痕迹消失。"""
         self._hidden = not self._hidden
         self.setVisible(not self._hidden)
         self.overlay.setVisible(not self._hidden)
@@ -325,51 +274,51 @@ class MainWindow(QMainWindow):
             app.quit()
 
     def _export_session(self) -> None:
-        from PySide6.QtWidgets import QFileDialog
         path, _ = QFileDialog.getSaveFileName(self, "导出面试记录", "", "Markdown (*.md)")
         if path and self._recorder is not None:
             from pathlib import Path as P
             p = self._recorder.export_markdown(P(path))
-            self.statusBar().showMessage(f"已导出 {p}")
+            self._info("ok", "已导出", str(p))
 
+    # ---- 监听 ----
     def start_listening(self) -> None:
         if self._pipeline is not None:
             self._pipeline.stop()
             self._pipeline = None
             self._set_listen_btn("开始监听")
-            self.statusBar().showMessage("已停止监听")
+            self.overlay.show_status("已停止监听")
             return
         if self._load_worker is not None and self._load_worker.isRunning():
-            return  # 加载中，忽略连点
+            return
         from core.downloader import models_ready
-        if not models_ready(self.cfg.models_dir):   # Bug 2 门禁：缺模型不盲启
-            self.statusBar().showMessage("模型未就绪：正在下载或未开始，点“下载模型”查看")
-            self.overlay.show_status("模型未就绪，暂不能监听")
+        if not models_ready(self.cfg.models_dir):
+            self._info("warn", "模型未就绪", "正在下载或未开始，点左侧“下载模型”查看")
             self._open_wizard()
             return
-        self._rehearsal_rag = None  # 回到正式会话
+        self._rehearsal_rag = None
         self._rag = self._rag or self._rag_factory()
         rag = self._rag
 
         def build(tr):
             from core.capture import LiveAudioSource
             from core.pipeline import AudioPipeline
-            return AudioPipeline(LiveAudioSource(device_name=self.cfg.audio_device or None),  # 审查 I3b
+            return AudioPipeline(LiveAudioSource(device_name=self.cfg.audio_device or None),
                                  tr, rag.buffer,
                                  recorder=getattr(rag, "recorder", self._recorder))
 
         self._load_and_start(build)
 
+    def _set_listen_btn(self, text: str, enabled: bool = True) -> None:
+        self.start_btn.setText(text)
+        self.start_btn.setEnabled(enabled)
+
     def _rehearse_clicked(self) -> None:
-        from PySide6.QtWidgets import QFileDialog
-        from pathlib import Path as P
         path, _ = QFileDialog.getOpenFileName(self, "选择录音", "", "Wave (*.wav)")
         if path:
-            self.start_rehearsal(P(path))
+            self.start_rehearsal(Path(path))
 
     def start_rehearsal(self, wav_path) -> None:
-        """彩排模式（spec §5④）：wav 按真实时长回放，链路与监听完全一致，
-        不接真实设备——首次真实面试前用它全链路验证。审查 I7：独立会话与记录。"""
+        """彩排模式（spec §5④）：wav 按真实时长回放，链路与监听一致。"""
         if self._pipeline is not None:
             self._pipeline.stop()
             self._pipeline = None
@@ -377,13 +326,12 @@ class MainWindow(QMainWindow):
             return
         from core.downloader import models_ready
         if not models_ready(self.cfg.models_dir):
-            self.statusBar().showMessage("模型未就绪：正在下载或未开始，点“下载模型”查看")
-            self.overlay.show_status("模型未就绪，暂不能彩排")
+            self._info("warn", "模型未就绪", "点左侧“下载模型”查看")
             self._open_wizard()
             return
         if self._rehearsal_rag_factory is not None:
             self._rehearsal_rag = self._rehearsal_rag_factory()
-        if self._active_rag() is None:  # 无工厂且尚未建过会话
+        if self._active_rag() is None:
             self._rag = self._rag_factory()
         rag = self._active_rag()
 
@@ -395,14 +343,9 @@ class MainWindow(QMainWindow):
 
         self._load_and_start(build, rehearse=True)
 
-    # --- Bug 2 / M7：转写器后台加载，绝不冻结 GUI 线程 ---
-    def _set_listen_btn(self, text: str, enabled: bool = True) -> None:
-        self.start_btn.setText(text)
-        self.start_btn.setEnabled(enabled)
-
+    # ---- Bug 2 / M7：转写器后台加载 ----
     def _load_and_start(self, build, rehearse: bool = False) -> None:
-        """连接必须用绑定方法（receiver=self）：窗口销毁时 Qt 自动断连，
-        否则队列信号投递到已死控件的闭包 → 访问违例。"""
+        """连接必须用绑定方法：窗口销毁时 Qt 自动断连。"""
         from app.workers import LoadWorker
         self._pending_build = build
         self._pending_rehearse = rehearse
@@ -416,71 +359,77 @@ class MainWindow(QMainWindow):
     def _on_loaded(self, tr) -> None:
         try:
             self._pipeline = self._pending_build(tr)
-            self._pipeline.on_subtitle = self.subtitle_sig.emit  # 管线线程安全 emit
+            self._pipeline.on_subtitle = self.subtitle_sig.emit
             self._pipeline.on_error = self.audio_error_sig.emit
             self._pipeline.start()
             self.overlay.show()
             self._set_listen_btn("停止监听" if not self._pending_rehearse else "开始监听")
-            self.statusBar().showMessage(
-                "彩排中" if self._pending_rehearse
-                else "监听中：系统音频 → 字幕；Ctrl+Alt+Space 触发回答")
+            self.switchTo(self.chat_page)
+            self.overlay.show_status(
+                "彩排中" if self._pending_rehearse else "监听中", ok=True)
         except Exception as exc:
-            self.statusBar().showMessage(f"启动失败：{exc}")
-            self.overlay.show_status(f"启动失败：{exc}")
+            self._info("error", "启动失败", str(exc))
             self._set_listen_btn("开始监听")
 
     def _on_load_failed(self, msg: str) -> None:
-        self.statusBar().showMessage(f"启动失败：{msg}")
-        self.overlay.show_status(f"启动失败：{msg}")
+        self._info("error", "启动失败", msg)
         self._set_listen_btn("开始监听")
+
+    def _on_audio_error(self, m: str) -> None:
+        self._pipeline = None
+        self._set_listen_btn("开始监听")
+        self._info("error", "音频异常，已停止监听", f"{m}（可重新点“开始监听”）")
+        self.overlay.show_status("音频异常，已停止监听")
 
     def _active_rag(self):
         """审查 I7：热键作用于当前活跃会话（彩排中 → 彩排会话）。"""
         return self._rehearsal_rag if self._rehearsal_rag is not None else self._rag
 
-    # --- 热键→生成 ---
+    # ---- 热键→生成 ----
     def _on_hotkey(self) -> None:
         from app.workers import GenerateWorker
         if self._worker is not None and self._worker.isRunning():
-            return  # 上一轮未完成，忽略连按
+            return
         if self._pipeline is not None:
-            self._pipeline.flush_pending()  # spec §6.6：先强刷 pending 语音再提取问题
+            self._pipeline.flush_pending()
         if self._active_rag() is None:
             self._rag = self._rag_factory()
-        if not self._hidden:  # 审查 I1：急隐藏态不弹悬浮窗
+        if not self._hidden:
             self.overlay.show()
+        self._chat_answer = self.chat_page.begin_answer(
+            self._last_utterance or "（手动触发生成）")
         self._worker = GenerateWorker(self._active_rag())
         self._worker.question.connect(self._on_question)
         self._worker.chunk.connect(self._on_chunk)
-        self._worker.notice.connect(
-            lambda m: self.overlay.show_status(m))  # 审查 I12：通用回答标记
+        self._worker.notice.connect(self._on_notice)
         self._worker.done.connect(lambda: self.overlay.end_answer())
-        self._worker.failed.connect(lambda m: self.overlay.show_status(f"生成失败：{m}，可重试"))
+        self._worker.failed.connect(lambda m: self._info("error", "生成失败", f"{m}，可重试"))
         self._worker.start()
 
-    # --- 字幕/问答双写：主窗口全量留档，悬浮窗只保最新观感 ---
+    # ---- 字幕/问答双写：对话流留档 + 悬浮窗实时 ----
     def _on_subtitle(self, t: str) -> None:
         self.overlay.set_subtitle(t)
-        self.subtitle_view.append(t)
-
-    def _on_audio_error(self, m: str) -> None:
-        """音频异常：错误进主窗口（悬浮窗只留一行），管线复位可重开。"""
-        self._pipeline = None
-        self._set_listen_btn("开始监听")
-        self.statusBar().showMessage(f"音频异常：{m}", 10000)
-        self.overlay.show_status(f"音频异常，已停止监听（点主窗口“开始监听”重试）")
+        self.chat_page.add_interviewer(t)
+        self._last_utterance = t
+        from core.heuristics import looks_like_question
+        worker_busy = self._worker is not None and self._worker.isRunning()
+        if self.chat_page.auto_switch.isChecked() and not worker_busy:
+            if looks_like_question(t):
+                self._on_hotkey()
 
     def _on_question(self, q: str) -> None:
         if q:
             self.overlay.begin_answer(q)
-            # 主窗口是全量会话留档：新问题追加成新块，不抹历史
-            self._main_answer_buf += f"\n**问：** {q}\n\n"
-            self.answer_view.setMarkdown(self._main_answer_buf)
         else:
             self.overlay.show_status("未识别到问题（稍后再按）")
 
     def _on_chunk(self, delta: str) -> None:
         self.overlay.append_answer(delta)
-        if delta:
-            self._main_answer_buf += delta
-            self.answer_view.setMarkdown(self._main_answer_buf)
+        if self._chat_answer is not None:
+            self._chat_answer.append(delta)
+            self.chat_page.scroll_to_bottom()
+
+    def _on_notice(self, m: str) -> None:
+        self.overlay.show_status(m)
+        if self._chat_answer is not None:
+            self._chat_answer.note.setText(m)
