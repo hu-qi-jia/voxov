@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>面试助手 · retro terminal 重构预览</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --bg-raise: #111111;
+    --bg-hover: #151515;
+    --fg: #e6e6e6;
+    --fg-dim: #9a9a9a;
+    --fg-faint: #5c5c5c;
+    --line: #2a2a2a;
+    --line-soft: #1e1e1e;
+    --accent: #5af78e;
+    --warn: #e3b341;
+    --danger: #f85149;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; border-radius: 0 !important; }
+  html { background: var(--bg); }
+  body {
+    font-family: "Cascadia Mono", "Consolas", "Microsoft YaHei UI", monospace;
+    font-size: 13px; line-height: 1.7; color: var(--fg);
+    letter-spacing: 0.02em;
+    max-width: 84ch; margin: 0 auto; padding: 32px 20px 80px;
+  }
+  a { color: var(--fg); text-decoration: none; }
+  ::selection { background: var(--accent); color: #0a0a0a; }
+  :focus-visible { outline: 1px dashed var(--accent); outline-offset: 2px; }
+
+  /* ---------- 预览文档骨架 ---------- */
+  .doc-head { display: flex; justify-content: space-between; align-items: baseline;
+              border-bottom: 1px solid var(--line); padding-bottom: 12px; }
+  .doc-head h1 { font-size: 13px; font-weight: 400; }
+  .doc-head h1 b { color: var(--accent); font-weight: 400; }
+  .meta { color: var(--fg-faint); font-size: 12px; }
+  .sec { margin-top: 40px; }
+  .sec > h2 { font-size: 13px; font-weight: 400; color: var(--fg-dim); margin-bottom: 16px; }
+  .sec > h2::before { content: "## "; color: var(--fg-faint); }
+  .note { color: var(--fg-faint); font-size: 12px; margin-top: 10px; }
+
+  /* ---------- 应用窗框 mockup ---------- */
+  .win { border: 1px solid var(--line); }
+  .win-title { display: flex; justify-content: space-between; align-items: center;
+               padding: 6px 14px; border-bottom: 1px solid var(--line); color: var(--fg-faint);
+               font-size: 12px; }
+  .win-title .glyphs span { margin-left: 12px; }
+  .win-title .glyphs span:hover { color: var(--fg); }
+
+  .nav { display: flex; gap: 28px; padding: 0 20px; border-bottom: 1px solid var(--line); }
+  .nav button {
+    background: none; border: none; cursor: pointer;
+    font: inherit; color: var(--fg-dim); letter-spacing: inherit;
+    padding: 12px 2px 10px; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  }
+  .nav button:hover { color: var(--fg); }
+  .nav button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
+  .nav .brand { color: var(--fg-faint); margin-right: auto; padding: 12px 0 10px; cursor: default; }
+
+  .screen { display: none; padding: 20px; min-height: 430px; }
+  .screen.on { display: block; }
+
+  /* ---------- 状态行（footer） ---------- */
+  .statusline { display: flex; gap: 20px; padding: 6px 14px; border-top: 1px solid var(--line);
+                color: var(--fg-faint); font-size: 12px; }
+  .statusline .msg { margin-left: auto; color: var(--accent); }
+  .cursor { display: inline-block; width: 7px; height: 13px; background: var(--accent);
+            vertical-align: text-bottom; animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .cursor { animation: none; } }
+
+  /* ---------- 监听页 ---------- */
+  .listen-head { display: flex; align-items: center; gap: 18px; padding-bottom: 14px; }
+  .listen-head .gap { margin-left: auto; color: var(--fg-faint); font-size: 12px; }
+  button.act {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: none; border: 1px solid var(--line); color: var(--fg);
+    font: inherit; letter-spacing: inherit; padding: 6px 16px; cursor: pointer;
+  }
+  button.act:hover { border-color: var(--fg-dim); background: var(--bg-hover); }
+  button.act:active { background: var(--bg-raise); }
+  button.act.primary { border-color: var(--accent); color: var(--accent); }
+  button.act.primary:hover { background: rgba(90,247,142,.06); }
+  button.act svg { width: 13px; height: 13px; stroke: currentColor; fill: none;
+                   stroke-width: 1.75; stroke-linecap: square; stroke-linejoin: miter; }
+  .chk { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+  .chk .box { width: 13px; height: 13px; border: 1px solid var(--fg-dim); display: inline-flex;
+              align-items: center; justify-content: center; font-size: 11px; line-height: 1;
+              color: var(--accent); }
+  .chk input { position: absolute; opacity: 0; }
+  .chk input:checked + .box::after { content: "×"; }
+  .chk input:focus-visible + .box { outline: 1px dashed var(--accent); outline-offset: 2px; }
+
+  .turn { padding: 14px 0; }
+  .turn + .turn { border-top: 1px solid var(--line-soft); }
+  .q { color: var(--fg-dim); }
+  .q::before { content: "› "; color: var(--fg-faint); }
+  .a { margin-top: 10px; max-width: 72ch; }
+  .a strong { color: var(--accent); font-weight: 400; }
+  .tag { margin-top: 8px; font-size: 12px; color: var(--fg-faint); }
+  .tag::before { content: "── "; color: var(--line); }
+
+  /* ---------- 知识库页 ---------- */
+  .kb-head { display: flex; align-items: center; gap: 12px; padding-bottom: 14px; }
+  .kb-head .count { color: var(--fg-faint); font-size: 12px; margin-left: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-weight: 400; color: var(--fg-faint); font-size: 12px;
+       padding: 8px 12px; border-bottom: 1px solid var(--line); }
+  td { padding: 10px 12px; border-bottom: 1px solid var(--line-soft); }
+  td.num { color: var(--fg-dim); width: 10ch; }
+  tr.sel td { background: var(--fg); color: var(--bg); }
+  tr.sel td.num { color: #555; }
+  tbody tr:hover td { background: var(--bg-hover); }
+  tbody tr.sel:hover td { background: var(--fg); }
+  td .ficon { display: inline-flex; vertical-align: -3px; margin-right: 10px; }
+  td svg { width: 13px; height: 13px; stroke: currentColor; fill: none;
+           stroke-width: 1.75; stroke-linecap: square; }
+
+  /* ---------- 设置页 ---------- */
+  .form { max-width: 58ch; }
+  .fsec { padding: 18px 0 20px; }
+  .fsec + .fsec { border-top: 1px solid var(--line-soft); }
+  .fsec > h3 { font-size: 13px; font-weight: 400; color: var(--fg-dim); margin-bottom: 14px; }
+  .fsec > h3::before { content: "# "; color: var(--fg-faint); }
+  .frow { display: grid; grid-template-columns: 9ch 1fr auto; gap: 14px; align-items: center;
+          margin-bottom: 10px; }
+  .frow > label { color: var(--fg-faint); font-size: 12px; }
+  .frow input[type=text], .frow input[type=password], .frow select {
+    width: 100%; background: var(--bg-raise); border: 1px solid var(--line); color: var(--fg);
+    font: inherit; font-size: 12px; letter-spacing: inherit; padding: 6px 10px;
+  }
+  .frow input:focus, .frow select:focus { border-color: var(--accent); outline: none; }
+  .progress { height: 10px; border: 1px solid var(--line); position: relative; }
+  .progress i { position: absolute; inset: 0 38% 0 0; background: var(--accent); }
+  .dl-meta { color: var(--fg-faint); font-size: 12px; margin-top: 6px; }
+  .save-row { display: flex; justify-content: flex-end; padding-top: 16px; }
+
+  /* ---------- tokens / 规划 ---------- */
+  .swatches { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px;
+              background: var(--line); border: 1px solid var(--line); }
+  .sw { background: var(--bg); padding: 10px; }
+  .sw i { display: block; height: 34px; border: 1px solid var(--line-soft); margin-bottom: 8px; }
+  .sw b { display: block; font-weight: 400; font-size: 12px; }
+  .sw s { text-decoration: none; color: var(--fg-faint); font-size: 11px; }
+  .spec { color: var(--fg-dim); }
+  .spec .s1 { font-size: 20px; color: var(--fg); }
+  .spec .s2 { font-size: 14px; color: var(--fg); }
+  .spec .s3 { font-size: 12px; }
+  ul.plan { list-style: none; }
+  ul.plan li { padding: 4px 0; }
+  ul.plan li::before { content: "- "; color: var(--fg-faint); }
+  ul.plan li.del { color: var(--fg-faint); }
+  ul.plan li.del::before { content: "x "; color: var(--danger); }
+  ul.plan li.del s { text-decoration-color: var(--danger); }
+  table.rt { margin-top: 4px; }
+  table.rt td:first-child { color: var(--fg-dim); }
+</style>
+</head>
+<body>
+
+<header class="doc-head">
+  <h1>面试助手 <b>/</b> retro terminal 重构预览</h1>
+  <span class="meta">2026-10-04 · v1 · 覆盖全部页面 · 桌面 1120×760</span>
+</header>
+
+<!-- ══════════════ hero：应用窗框（tab 可点） ══════════════ -->
+<section class="sec">
+  <div class="win">
+    <div class="win-title"><span>notes</span><span class="glyphs"><span>—</span><span>□</span><span>×</span></span></div>
+
+    <div class="nav" role="tablist">
+      <span class="brand">notes</span>
+      <button role="tab" aria-selected="true" data-s="listen">监听</button>
+      <button role="tab" aria-selected="false" data-s="kb">知识库</button>
+      <button role="tab" aria-selected="false" data-s="set">设置</button>
+    </div>
+
+    <!-- ── 监听 ── -->
+    <div class="screen on" id="s-listen">
+      <div class="listen-head">
+        <button class="act primary" id="listen-btn">
+          <svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg>
+          <span>开始监听</span>
+        </button>
+        <label class="chk"><input type="checkbox" checked><span class="box"></span>自动作答</label>
+        <span class="gap">model: 就绪 · asr: sherpa-onnx</span>
+      </div>
+
+      <div class="turn">
+        <div class="q">我们聊聊后端吧。先说说 Redis 的持久化机制？</div>
+        <div class="a"><strong>RDB</strong> 是定时快照：fork 子进程全量落盘，恢复快、文件小，但会丢最后一次快照之后的数据。<strong>AOF</strong> 是命令追加日志：丢数据少，但文件大、恢复慢，一般用 everysec 折中。生产上常两者混用，<strong>RDB 做冷备、AOF 做热备</strong>，按业务容忍度调策略。</div>
+        <div class="tag">基于知识库 · 3 条资料</div>
+      </div>
+
+      <div class="turn">
+        <div class="q">好，那介绍一下你自己吧</div>
+        <div class="a">面试官您好，我是后端方向的候选人，三年主要在做高并发存储服务——主导过日千万级请求的缓存层重构，峰值 QPS 提升三倍。熟悉 Redis、MySQL 和消息队列，今天想重点聊聊我在稳定性治理上的实战。</div>
+        <div class="tag">开放题 · 未用资料</div>
+      </div>
+
+      <div class="turn">
+        <div class="q">我们团队主要做 ToB 业务</div>
+        <div class="a">正好匹配我的经验——我做过 SaaS 多租户架构，理解 ToB 客户对定制化和稳定性双重要求，也踩过对应的坑。</div>
+        <div class="tag">接话 · 未用资料</div>
+      </div>
+    </div>
+
+    <!-- ── 知识库 ── -->
+    <div class="screen" id="s-kb">
+      <div class="kb-head">
+        <button class="act"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8 12 3 7 8"/><path d="M12 3v12"/></svg>上传</button>
+        <button class="act"><svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>删除</button>
+        <button class="act"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>导出</button>
+        <span class="count">4 文件 · 208 块</span>
+      </div>
+      <table>
+        <thead><tr><th>文件</th><th>块数</th></tr></thead>
+        <tbody>
+          <tr><td><span class="ficon"><svg viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg></span>02-AI产品方法论.md</td><td class="num">21</td></tr>
+          <tr class="sel"><td><span class="ficon"><svg viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg></span>03-模型选型.md</td><td class="num">65</td></tr>
+          <tr><td><span class="ficon"><svg viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg></span>04-多模态大模型.md</td><td class="num">79</td></tr>
+          <tr><td><span class="ficon"><svg viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg></span>05-模型评估.md</td><td class="num">43</td></tr>
+        </tbody>
+      </table>
+      <p class="note">选中态为反白（终端惯用 inverse video）；无竖线、无编辑笔、整行选中。</p>
+    </div>
+
+    <!-- ── 设置 ── -->
+    <div class="screen" id="s-set">
+      <div class="form">
+        <div class="fsec">
+          <h3>语音模型</h3>
+          <div class="frow"><label>状态</label><span>下载中 · 62% · 12.4 MB/s · 断点续传</span>
+            <button class="act"><svg viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>取消</button></div>
+          <div class="frow"><label></label><div class="progress"><i></i></div><span></span></div>
+          <div class="frow"><label></label><span class="dl-meta">就绪后此区显示：已就绪 · sherpa-onnx（约 300 MB）· [重新下载]</span><span></span></div>
+        </div>
+        <div class="fsec">
+          <h3>大模型</h3>
+          <div class="frow"><label>base url</label><input type="text" value="https://api.deepseek.com/v1"><span></span></div>
+          <div class="frow"><label>api key</label><input type="password" value="sk-0000000000000000"><span></span></div>
+          <div class="frow"><label>模型</label><input type="text" value="deepseek-chat"><span></span></div>
+        </div>
+        <div class="fsec">
+          <h3>热键</h3>
+          <div class="frow"><label>触发</label><input type="text" value="ctrl+alt+space"><span></span></div>
+          <div class="frow"><label>急隐藏</label><input type="text" value="ctrl+alt+h"><span></span></div>
+        </div>
+        <div class="fsec">
+          <h3>音频与目录</h3>
+          <div class="frow"><label>音频设备</label>
+            <select><option>系统默认（回环）</option><option>扬声器 (Realtek Audio)</option></select><span></span></div>
+          <div class="frow"><label>模型目录</label><input type="text" value="E:\个人项目\面试助手\models"><span></span></div>
+          <div class="frow"><label>数据目录</label><input type="text" value="E:\个人项目\面试助手\data"><span></span></div>
+        </div>
+        <div class="save-row"><button class="act primary" id="save-btn">
+          <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>保存</button></div>
+      </div>
+    </div>
+
+    <div class="statusline">
+      <span>model: 就绪</span><span>kb: 4 文件</span><span>hotkey: ctrl+alt+space</span>
+      <span class="msg" id="status-msg"></span>
+    </div>
+  </div>
+  <p class="note">可交互：切换顶部 tab；点「开始监听」看状态行变化；表格第二行为反白选中态。HTML 为视觉近似，实际为 PySide6 + QSS 同 tokens 实现。</p>
+</section>
+
+<!-- ══════════════ tokens ══════════════ -->
+<section class="sec">
+  <h2>设计 tokens</h2>
+  <div class="swatches">
+    <div class="sw"><i style="background:#0a0a0a"></i><b>bg</b><s>#0a0a0a</s></div>
+    <div class="sw"><i style="background:#111111"></i><b>bg-raise</b><s>#111111</s></div>
+    <div class="sw"><i style="background:#2a2a2a"></i><b>line</b><s>#2a2a2a</s></div>
+    <div class="sw"><i style="background:#9a9a9a"></i><b>fg-dim</b><s>#9a9a9a</s></div>
+    <div class="sw"><i style="background:#e6e6e6"></i><b>fg</b><s>#e6e6e6</s></div>
+    <div class="sw"><i style="background:#5af78e"></i><b>accent</b><s>#5af78e</s></div>
+    <div class="sw"><i style="background:#f85149"></i><b>danger</b><s>#f85149</s></div>
+  </div>
+  <p class="note" style="margin-top:14px">字体 Cascadia Mono → Consolas → Microsoft YaHei UI（中文回退），字距 +0.5pt。<br>
+  禁用：圆角 / 阴影 / 渐变 / 卡片堆叠。语义色：ok=#5af78e · warn=#e3b341 · danger=#f85149。</p>
+  <p class="spec" style="margin-top:14px">
+    <span class="s1">标题 20px</span><br>
+    <span class="s2">正文答案 14px —— 口语化中文，可直接照读</span><br>
+    <span class="s3">标注与状态 12px 弱色 · 等宽 · 字距加宽</span>
+  </p>
+</section>
+
+<!-- ══════════════ 交付范围 ══════════════ -->
+<section class="sec">
+  <h2>交付范围</h2>
+  <ul class="plan">
+    <li>全话轮触发 + 检索路由（距离阈值 + 词表双保险，三模式标注如监听页所示）</li>
+    <li>模型下载并入设置页（向导删除），托盘菜单改跳设置</li>
+    <li>Lucide 图标 vendor 进 assets/icons/，仅用于动作按钮（约 10 枚）</li>
+    <li>对话流去容器：转写行 + 1px 分隔线，无气泡</li>
+    <li class="del"><s>彩排页 + 彩排会话管线</s>（WavFileSource 类保留，管线基建）</li>
+    <li class="del"><s>wizard.py / settings_dialog.py / qfluentwidgets / InfoBar</s></li>
+  </ul>
+  <table class="rt">
+    <thead><tr><th>路由模式</th><th>触发</th><th>行为</th><th>标注</th></tr></thead>
+    <tbody>
+      <tr><td>refs</td><td>检索 top 距离 ≤ 1.05</td><td>注入资料，现状生成</td><td>基于知识库 · N 条资料</td></tr>
+      <tr><td>generic</td><td>低分 / 无命中</td><td>凭自身经验答，禁编引用</td><td>开放题 · 未用资料</td></tr>
+      <tr><td>statement</td><td>非问句实质话轮</td><td>给一两句可照读接话</td><td>接话 · 未用资料</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<script>
+  // tab 切换（支持 #kb / #set 直达）
+  const tabs = document.querySelectorAll('.nav button[data-s]');
+  function show(id) {
+    tabs.forEach(x => x.setAttribute('aria-selected', x.dataset.s === id));
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('on'));
+    document.getElementById('s-' + id).classList.add('on');
+  }
+  tabs.forEach(t => t.addEventListener('click', () => show(t.dataset.s)));
+  if (location.hash) show(location.hash.slice(1));
+  // 开始监听 → 状态行
+  const lb = document.getElementById('listen-btn'), lbl = lb.querySelector('span');
+  let on = false, t0 = 0, tick = null;
+  const msg = document.getElementById('status-msg');
+  lb.addEventListener('click', () => {
+    on = !on;
+    lbl.textContent = on ? '停止监听' : '开始监听';
+    lb.classList.toggle('primary', !on);
+    clearInterval(tick);
+    if (on) {
+      t0 = Date.now();
+      tick = setInterval(() => {
+        const s = Math.floor((Date.now() - t0) / 1000);
+        msg.innerHTML = 'listening ' + String(Math.floor(s / 60)).padStart(2, '0') + ':' +
+                        String(s % 60).padStart(2, '0') + ' <span class="cursor"></span>';
+      }, 250);
+    } else {
+      msg.textContent = '已停止监听';
+      setTimeout(() => { if (!on) msg.textContent = ''; }, 4000);
+    }
+  });
+  // 保存 → 状态行确认
+  document.getElementById('save-btn').addEventListener('click', () => {
+    msg.textContent = '设置已保存';
+    setTimeout(() => { msg.textContent = ''; }, 4000);
+  });
+</script>
+</body>
+</html>
