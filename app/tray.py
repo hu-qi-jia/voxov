@@ -2,9 +2,13 @@
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
+from core.config import app_root
+
 
 def create_tray(win) -> QSystemTrayIcon:
-    tray = QSystemTrayIcon(QIcon(), parent=win)  # TODO(Task 18): 换真实图标
+    icon_path = app_root() / "assets" / "icon.svg"  # 相对应用根解析，不依赖 CWD
+    tray = QSystemTrayIcon(QIcon(str(icon_path)) if icon_path.exists() else QIcon(),
+                           parent=win)
     menu = QMenu()
     show = QAction("显示主窗口", win)
     show.triggered.connect(win.show)
