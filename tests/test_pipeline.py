@@ -93,6 +93,37 @@ def test_pipeline_transcriber_error_calls_on_error(tmp_path):
     p.start().join(timeout=30)
     assert errs and "asr崩了" in errs[0]
 
+# --- v3 迭代（参考 VoxRecall）：自适应阈值 + 长句强刷 ---
+def test_pipeline_quiet_speech_recognized(tmp_path):
+    # 低音量系统音频（RMS≈283，旧固定阈值 500 会漏）必须被自适应阈值接住
+    rate = 16000
+    n = int(rate * 3)
+    t = np.arange(n) / rate
+    sig = np.where((t >= 1) & (t < 2), np.sin(2 * np.pi * 440 * t) * 400, 0.0)
+    wav = tmp_path / "q.wav"
+    with wave.open(str(wav), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+        w.writeframes(sig.astype(np.int16).tobytes())
+    buf = SessionBuffer()
+    p = AudioPipeline(WavFileSource(wav), FakeTranscriber("小声说的话"), buf)
+    p.start().join(timeout=30)
+    assert len(buf.entries) == 1 and buf.entries[0].text == "小声说的话"
+
+def test_pipeline_force_flushes_long_speech(tmp_path):
+    # 连续说话 3s 无停顿：max_hold_sec=1.0 应强制定期落句，而不是憋一句
+    rate = 16000
+    n = int(rate * 3)
+    t = np.arange(n) / rate
+    sig = np.sin(2 * np.pi * 440 * t) * 6000
+    wav = tmp_path / "l.wav"
+    with wave.open(str(wav), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+        w.writeframes(sig.astype(np.int16).tobytes())
+    buf = SessionBuffer()
+    p = AudioPipeline(WavFileSource(wav), FakeTranscriber("段"), buf, max_hold_sec=1.0)
+    p.start().join(timeout=30)
+    assert len(buf.entries) >= 2
+
 # --- 审查修复轮 ---
 import threading
 import time as _time

@@ -59,3 +59,37 @@ def test_retry_once_then_succeeds():
             raise httpx.ConnectError("boom")
         return httpx.Response(200, text=sse("恢复"))
     assert "".join(make_client(handler).stream([{"role": "user", "content": "x"}])) == "恢复"
+
+
+def test_client_reused_across_calls(monkeypatch):
+    """连接保活：多次调用只建一个 httpx.Client（省去每次 TCP+TLS 握手）。"""
+    built = {"n": 0}
+    real_client = httpx.Client
+
+    class CountingClient(real_client):
+        def __init__(self, *a, **k):
+            built["n"] += 1
+            super().__init__(*a, **k)
+
+    monkeypatch.setattr(httpx, "Client", CountingClient)
+    c = make_client(lambda req: httpx.Response(200, text=sse("ok")))
+    assert built["n"] == 0                      # 构造 LLMClient 不建连接
+    list(c.stream([{"role": "user", "content": "x"}]))
+    assert built["n"] == 1
+    list(c.stream([{"role": "user", "content": "y"}]))
+    assert built["n"] == 1                      # 第二次复用，不再新建
+
+
+def test_warmup_sends_tiny_request_and_swallows_errors():
+    captured = {}
+    def handler(req):
+        captured["json"] = json.loads(req.content)
+        return httpx.Response(200, text=sse("h"))
+    c = make_client(handler)
+    c.warmup()
+    assert captured["json"]["max_tokens"] == 1
+    # 服务端挂了也不许炸：静默
+    def dead(req):
+        raise httpx.ConnectError("down")
+    c2 = make_client(dead)
+    c2.warmup()                                 # 不抛即通过

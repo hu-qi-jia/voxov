@@ -34,6 +34,9 @@ def build_app():
     rehearsal_rag = lambda: make_rag(SessionRecorder(  # noqa: E731 - 彩排独立会话（spec §5④）
         sessions_dir=cfg.sessions_dir, rehearsal=True))
     rag = make_rag(recorder)
+    if cfg.llm_base_url and cfg.llm_api_key:   # 后台预热 LLM 连接，首答不付冷启动
+        import threading
+        threading.Thread(target=rag.llm.warmup, daemon=True, name="llm-warmup").start()
     return cfg, kb, rag, recorder, rehearsal_rag
 
 
