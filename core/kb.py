@@ -1,6 +1,7 @@
 # core/kb.py
 import re
 import sqlite3
+import threading
 from pathlib import Path
 
 import sqlite_vec
@@ -14,7 +15,8 @@ class KnowledgeBase:
     def __init__(self, db_path: Path, embedder: Embedder) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.embedder = embedder
-        self.con = sqlite3.connect(db_path)
+        self._lock = threading.RLock()  # 审查 C1：主线程建连、worker 线程检索
+        self.con = sqlite3.connect(db_path, check_same_thread=False)
         self.con.enable_load_extension(True)
         sqlite_vec.load(self.con)
         self.con.enable_load_extension(False)
@@ -39,48 +41,55 @@ class KnowledgeBase:
         if not chunks:
             raise ValueError(f"无可切分内容: {md_path}")
         vecs = self.embedder.encode([c.text for c in chunks])
-        with self.con:
-            self.delete_file(md_path.name)
-            for c, v in zip(chunks, vecs):
-                cur = self.con.execute(
-                    "INSERT INTO chunks(source_file, heading_path, seq, text) VALUES(?,?,?,?)",
-                    (c.source_file, c.heading_path, c.index, c.text))
-                self.con.execute(
-                    "INSERT INTO vec_chunks(chunk_id, embedding) VALUES(?,?)",
-                    (cur.lastrowid, serialize_float32(v)))
-                self.con.execute(
-                    "INSERT INTO chunks_fts(rowid, text) VALUES(?,?)",
-                    (cur.lastrowid, c.text))
+        with self._lock:
+            with self.con:
+                self.delete_file(md_path.name)
+                for c, v in zip(chunks, vecs):
+                    cur = self.con.execute(
+                        "INSERT INTO chunks(source_file, heading_path, seq, text) VALUES(?,?,?,?)",
+                        (c.source_file, c.heading_path, c.index, c.text))
+                    self.con.execute(
+                        "INSERT INTO vec_chunks(chunk_id, embedding) VALUES(?,?)",
+                        (cur.lastrowid, serialize_float32(v)))
+                    self.con.execute(
+                        "INSERT INTO chunks_fts(rowid, text) VALUES(?,?)",
+                        (cur.lastrowid, c.text))
         return len(chunks)
 
     def delete_file(self, name: str) -> int:
-        ids = [r[0] for r in self.con.execute(
-            "SELECT id FROM chunks WHERE source_file=?", (name,))]
-        with self.con:
-            for i in ids:
-                self.con.execute("DELETE FROM vec_chunks WHERE chunk_id=?", (i,))
-                self.con.execute("DELETE FROM chunks_fts WHERE rowid=?", (i,))
-            cur = self.con.execute("DELETE FROM chunks WHERE source_file=?", (name,))
-        return cur.rowcount
+        with self._lock:
+            ids = [r[0] for r in self.con.execute(
+                "SELECT id FROM chunks WHERE source_file=?", (name,))]
+            with self.con:
+                for i in ids:
+                    self.con.execute("DELETE FROM vec_chunks WHERE chunk_id=?", (i,))
+                    self.con.execute("DELETE FROM chunks_fts WHERE rowid=?", (i,))
+                cur = self.con.execute("DELETE FROM chunks WHERE source_file=?", (name,))
+            return cur.rowcount
 
     def list_files(self) -> list[tuple[str, int]]:
-        return list(self.con.execute(
-            "SELECT source_file, COUNT(*) FROM chunks GROUP BY source_file ORDER BY source_file"))
+        with self._lock:
+            return list(self.con.execute(
+                "SELECT source_file, COUNT(*) FROM chunks GROUP BY source_file ORDER BY source_file"))
 
     def vector_search(self, vec: list[float], k: int = 5) -> list[tuple[int, float]]:
-        rows = self.con.execute(
-            "SELECT chunk_id, distance FROM vec_chunks WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
-            (serialize_float32(vec), k))
-        return [(int(r[0]), float(r[1])) for r in rows]
+        with self._lock:
+            rows = self.con.execute(
+                "SELECT chunk_id, distance FROM vec_chunks WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
+                (serialize_float32(vec), k))
+            return [(int(r[0]), float(r[1])) for r in rows]
 
     def fts_search(self, query: str, k: int = 5) -> list[int]:
-        phrase = '"' + re.sub(r'["\s]+', ' ', query).strip() + '"'
-        if len(phrase.strip('"')) < 3:  # trigram 最短 3 字符
+        # 审查 I5：整句短语匹配对自然提问失效 → 按词项 OR（拉丁/数字 ≥3、汉字连串 ≥3）
+        tokens = [t for t in re.findall(r"[0-9A-Za-z_]{3,}|[一-鿿]{3,}", query)
+                  if '"' not in t]
+        if not tokens:  # trigram 最短 3 字符
             return []
+        expr = " OR ".join(f'"{t}"' for t in tokens)
         try:
             rows = self.con.execute(
                 "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ? ORDER BY rank LIMIT ?",
-                (phrase, k))
+                (expr, k))
         except sqlite3.OperationalError:
             return []
         return [int(r[0]) for r in rows]
@@ -89,5 +98,6 @@ class KnowledgeBase:
         if not ids:
             return []
         ph = ",".join("?" * len(ids))
-        return [(int(r[0]), r[4], r[2], r[1]) for r in self.con.execute(
-            f"SELECT id, source_file, heading_path, seq, text FROM chunks WHERE id IN ({ph}) ORDER BY id", ids)]
+        with self._lock:
+            return [(int(r[0]), r[4], r[2], r[1]) for r in self.con.execute(
+                f"SELECT id, source_file, heading_path, seq, text FROM chunks WHERE id IN ({ph}) ORDER BY id", ids)]

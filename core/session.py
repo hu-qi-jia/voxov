@@ -1,4 +1,5 @@
 # core/session.py
+import json
 import time as _time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -58,18 +59,35 @@ class QATurn:
 
 
 class SessionRecorder:
-    """面试全程记录 + md 导出（spec §5③）。"""
+    """面试全程记录 + md 导出（spec §5③）。
+    审查 I7：传 sessions_dir 时以 JSONL 追加落盘（spec §4），崩溃不丢已记录内容；
+    rehearsal=True 写入 sessions/rehearsal/ 子目录（spec §5④）。"""
 
-    def __init__(self) -> None:
+    def __init__(self, sessions_dir: Path | None = None, rehearsal: bool = False) -> None:
         self.turns: list[QATurn] = []
         self.transcripts: list[TranscriptEntry] = []
+        self._json_path: Path | None = None
+        if sessions_dir is not None:
+            d = sessions_dir / "rehearsal" if rehearsal else sessions_dir
+            self._json_path = d / f"{datetime.now():%Y%m%d-%H%M%S}.json"
+
+    def _persist(self, record: dict) -> None:
+        if self._json_path is None:
+            return
+        self._json_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._json_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     def add_transcript(self, entry: TranscriptEntry) -> None:
         self.transcripts.append(entry)
+        self._persist({"type": "transcript", "ts": entry.ts,
+                       "end_ts": entry.end_ts, "text": entry.text})
 
     def add_qa(self, question: str, contexts: Iterable, answer: str) -> None:
         sources = [f"{c.source_file} › {c.heading_path}" for c in contexts]
         self.turns.append(QATurn(question, sources, answer, _time.time()))
+        self._persist({"type": "qa", "question": question,
+                       "sources": sources, "answer": answer, "ts": self.turns[-1].ts})
 
     def export_markdown(self, path: Path) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)

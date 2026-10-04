@@ -92,3 +92,36 @@ def test_pipeline_transcriber_error_calls_on_error(tmp_path):
     p.on_error = errs.append
     p.start().join(timeout=30)
     assert errs and "asr崩了" in errs[0]
+
+# --- 审查修复轮 ---
+import threading
+import time as _time
+
+def test_flush_pending_never_runs_transcriber_concurrently(tmp_path):
+    # 审查 I6：热键 flush 与管线自然 flush 不得并发进入转写器
+    conc = {"cur": 0, "max": 0}
+    clock = threading.Lock()
+    class _Src:
+        sample_rate = 16000
+        channels = 1
+    class SlowTr:
+        def transcribe(self, pcm):
+            with clock:
+                conc["cur"] += 1
+                conc["max"] = max(conc["max"], conc["cur"])
+            p._speech = [b"\x01\x00" * 8000]   # 转写期间新语音到达
+            p._speech_start = _time.time()
+            _time.sleep(0.15)
+            with clock:
+                conc["cur"] -= 1
+            return "段"
+    p = AudioPipeline(_Src(), SlowTr(), SessionBuffer())
+    p._speech = [b"\x01\x00" * 8000]
+    p._speech_start = _time.time()
+    def late_flush():
+        _time.sleep(0.05)
+        p.flush_pending()
+    t1 = threading.Thread(target=p.flush_pending)
+    t2 = threading.Thread(target=late_flush)
+    t1.start(); t2.start(); t1.join(); t2.join()
+    assert conc["max"] == 1

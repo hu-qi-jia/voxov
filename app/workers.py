@@ -6,6 +6,7 @@ from PySide6.QtCore import QThread, Signal
 class GenerateWorker(QThread):
     chunk = Signal(str)      # 答案增量
     question = Signal(str)   # 提取到的问题（悬浮窗标题）
+    notice = Signal(str)     # 审查 I12：无知识库命中等状态提示
     done = Signal()
     failed = Signal(str)
 
@@ -24,6 +25,8 @@ class GenerateWorker(QThread):
                     self.chunk.emit(delta)
             if not got_question:
                 self.question.emit("")
+            if got_question and getattr(self.rag, "last_had_refs", True) is False:
+                self.notice.emit("通用回答（知识库无命中）")
             self.done.emit()
         except Exception as exc:
             self.failed.emit(str(exc))

@@ -15,7 +15,7 @@ def create_tray(win) -> QSystemTrayIcon:
     wizard = QAction("下载模型", win)
     wizard.triggered.connect(win._open_wizard)
     quit_ = QAction("退出", win)
-    quit_.triggered.connect(win.close)
+    quit_.triggered.connect(win.quit_app)  # 审查 I2：真正退出（清理热钩/管线），非仅关窗
     menu.addAction(show)
     menu.addAction(wizard)
     menu.addAction(quit_)

@@ -47,3 +47,27 @@ def test_short_pause_not_boundary():
     entries = [e(96, 3.0, "请介绍一下"), e(99.6, 3.0, "主从复制")]  # gap 0.6s < 1.5s
     q = extract_question(entries, now=NOW)
     assert q == "请介绍一下主从复制"
+
+# --- 审查修复轮 ---
+import json as _json
+
+def test_recorder_persists_jsonl(tmp_path):
+    # 审查 I7：spec §4 要求会话落盘 data/sessions/*.json（追加式）
+    from core.session import SessionRecorder, TranscriptEntry
+    r = SessionRecorder(sessions_dir=tmp_path)
+    r.add_transcript(TranscriptEntry(ts=1.0, end_ts=2.0, text="介绍Redis"))
+    r.add_qa("介绍Redis", [], "**RDB** 是快照。")
+    files = list(tmp_path.glob("*.json"))
+    assert len(files) == 1
+    lines = files[0].read_text(encoding="utf-8").strip().splitlines()
+    recs = [_json.loads(l) for l in lines]
+    assert [x["type"] for x in recs] == ["transcript", "qa"]
+    assert recs[1]["question"] == "介绍Redis" and "RDB" in recs[1]["answer"]
+
+def test_recorder_rehearsal_goes_to_subdir(tmp_path):
+    # 审查 I7：彩排会话与真实会话分目录（spec §5④）
+    from core.session import SessionRecorder
+    r = SessionRecorder(sessions_dir=tmp_path, rehearsal=True)
+    r.add_qa("q", [], "a")
+    assert list((tmp_path / "rehearsal").glob("*.json"))
+    assert list(tmp_path.glob("*.json")) == []

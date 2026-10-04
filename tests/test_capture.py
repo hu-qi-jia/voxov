@@ -49,3 +49,12 @@ def test_stop_terminates_iteration(tmp_path):
     src.stop()
     with pytest.raises(StopIteration):
         next(it)
+
+# --- 审查修复轮 ---
+def test_live_source_queue_bounded_drops_oldest():
+    # 审查 I8：spec §4/§8 环形缓冲 60s——积压时丢最旧，最新语音必须可达
+    from core.capture import LiveAudioSource
+    src = LiveAudioSource()
+    for _ in range(700):
+        src._on_audio(b"abcdefgh" * 20)
+    assert src._queue.qsize() == 600

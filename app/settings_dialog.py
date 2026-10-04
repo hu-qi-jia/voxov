@@ -75,13 +75,24 @@ class SettingsDialog(QDialog):
             edit.setText(d)
 
     def _save(self) -> None:
+        hotkey = self.hotkey_edit.text().strip() or "ctrl+alt+space"
+        hide_hotkey = self.hide_hotkey_edit.text().strip() or "ctrl+alt+h"
+        # 审查 I4：非法热键一旦落盘，下次启动即崩——保存前校验并拒绝
+        for label, text in (("触发热键", hotkey), ("急隐藏热键", hide_hotkey)):
+            try:
+                import keyboard
+                keyboard.parse_hotkey(text)
+            except Exception:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "热键无效", f"无法识别的{label}：{text}")
+                return
         self.cfg.llm_base_url = self.base_url_edit.text().strip()
         self.cfg.llm_api_key = self.api_key_edit.text().strip()
         self.cfg.llm_model = self.model_edit.text().strip()
         self.cfg.models_dir = Path(self.models_dir_edit.text())
         self.cfg.data_dir = Path(self.data_dir_edit.text())
-        self.cfg.hotkey = self.hotkey_edit.text().strip() or "ctrl+alt+space"
-        self.cfg.hide_hotkey = self.hide_hotkey_edit.text().strip() or "ctrl+alt+h"
+        self.cfg.hotkey = hotkey
+        self.cfg.hide_hotkey = hide_hotkey
         self.cfg.audio_device = self.device_combo.currentData() or ""
         save_config(self.cfg)
         self.accept()

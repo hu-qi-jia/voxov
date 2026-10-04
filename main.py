@@ -1,18 +1,15 @@
 # main.py
 import sys
-from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 
-from app.hotkey import HotkeyBridge
+import core.config as cc
 from app.main_window import MainWindow
-from app.overlay import OverlayWindow
 from app.tray import create_tray
-from core.config import default_config, load_config
 
 
 def build_app():
-    cfg = load_config(Path(__file__).parent / "data")
+    cfg = cc.load_config(cc.app_root() / "data")  # 审查 C2：打包后 __file__ 在 _internal
     cfg.ensure_dirs()
     from core.embedder import BgeEmbedder, HashEmbedder
     from core.kb import KnowledgeBase
@@ -24,10 +21,17 @@ def build_app():
     models_ok = models_ready(cfg.models_dir)
     embedder = BgeEmbedder(cfg.models_dir / "bge-small-zh-v1.5") if models_ok else HashEmbedder()
     kb = KnowledgeBase(cfg.kb_path, embedder)
-    llm = LLMClient(cfg.llm_base_url, cfg.llm_api_key, cfg.llm_model)
-    recorder = SessionRecorder()
-    rag = RagService(Retriever(kb, embedder), llm, recorder=recorder)
-    return cfg, kb, rag, recorder
+
+    def make_rag(recorder):
+        return RagService(Retriever(kb, embedder),
+                          LLMClient(cfg.llm_base_url, cfg.llm_api_key, cfg.llm_model),
+                          recorder=recorder)
+
+    recorder = SessionRecorder(sessions_dir=cfg.sessions_dir)          # 审查 I7：落盘
+    rehearsal_rag = lambda: make_rag(SessionRecorder(  # noqa: E731 - 彩排独立会话（spec §5④）
+        sessions_dir=cfg.sessions_dir, rehearsal=True))
+    rag = make_rag(recorder)
+    return cfg, kb, rag, recorder, rehearsal_rag
 
 
 def main() -> int:
@@ -35,13 +39,13 @@ def main() -> int:
     from app.theme import apply as apply_theme
     apply_theme(app)
     app.setQuitOnLastWindowClosed(False)
-    cfg, kb, rag, recorder = build_app()
-    win = MainWindow(cfg, kb_factory=lambda: kb, rag_factory=lambda: rag)
+    cfg, kb, rag, recorder, rehearsal_factory = build_app()
+    win = MainWindow(cfg, kb_factory=lambda: kb, rag_factory=lambda: rag,
+                     rehearsal_rag_factory=rehearsal_factory)
     win._recorder = recorder
     win.show()
-    bridge = HotkeyBridge(cfg.hotkey, cfg.hide_hotkey)
-    bridge.pressed.connect(win._on_hotkey)
-    bridge.hidden.connect(win._on_hide)   # 急隐藏（spec §6.5）
+    win.maybe_first_run_wizard()   # 审查 I10：首启缺模型自动引导
+    win.rebind_hotkeys()           # 审查 I3c：热键由主窗口持有，设置保存后重绑
     tray = create_tray(win)
     win.tray = tray
     return app.exec()

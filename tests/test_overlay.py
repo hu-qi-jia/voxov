@@ -51,3 +51,35 @@ def test_drag_moves_window(overlay):
                        Qt.NoButton, Qt.LeftButton, Qt.NoModifier)
     overlay.mouseMoveEvent(move)
     assert overlay.pos() != before or overlay._drag_offset is not None
+
+# --- 审查修复轮 ---
+def test_answer_renders_markdown_not_literal_asterisks(overlay):
+    # 审查 I9：LLM 输出 **加粗** 不得以字面星号展示（"可直接照读"承诺）
+    overlay.begin_answer("Q")
+    overlay.append_answer("**RDB** 是快照，")
+    overlay.append_answer("**AOF** 是日志。")
+    plain = overlay.answer_view.toPlainText()
+    assert "**" not in plain
+    assert "RDB 是快照" in plain
+
+def test_adjust_opacity_clamped(overlay):
+    # 审查 I11：spec §2 可调透明度，范围夹取
+    overlay.adjust_opacity(0.5)
+    assert overlay.windowOpacity() == 1.0
+    overlay.adjust_opacity(-5.0)
+    # Windows 平台层把窗口不透明度量化为 8bit（0.3 → 76/255），容差放宽到一级量化
+    assert abs(overlay.windowOpacity() - 0.3) <= 1 / 255
+
+def test_ctrl_wheel_adjusts_opacity(overlay):
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+    before = overlay.windowOpacity()
+    up = QWheelEvent(QPointF(10, 10), QPointF(10, 10), QPoint(0, 0), QPoint(0, 120),
+                     Qt.NoButton, Qt.ControlModifier, Qt.ScrollUpdate, False)
+    overlay.wheelEvent(up)
+    assert overlay.windowOpacity() > before
+    plain_ev = QWheelEvent(QPointF(10, 10), QPointF(10, 10), QPoint(0, 0), QPoint(0, 120),
+                           Qt.NoButton, Qt.NoModifier, Qt.ScrollUpdate, False)
+    mid = overlay.windowOpacity()
+    overlay.wheelEvent(plain_ev)
+    assert overlay.windowOpacity() == mid

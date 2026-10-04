@@ -35,6 +35,7 @@ class AudioPipeline:
         self._speech: list[bytes] = []
         self._speech_start: float | None = None
         self._speech_lock = threading.Lock()
+        self._flush_lock = threading.Lock()  # 审查 I6：转写单飞（热键 flush 与自然 flush 串行）
         self._last_activity = time.time()
 
     def start(self) -> threading.Thread:
@@ -76,7 +77,8 @@ class AudioPipeline:
             blocks, start = self._speech, self._speech_start
             self._speech, self._speech_start = [], None
         if blocks and start is not None:
-            self._flush(blocks, start, self._last_activity)
+            with self._flush_lock:
+                self._flush(blocks, start, self._last_activity)
 
     def flush_pending(self) -> None:
         """热键路径专用（spec §6.6）：立即转写未达静音阈值的 pending 语音，

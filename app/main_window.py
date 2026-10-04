@@ -13,12 +13,15 @@ class MainWindow(QMainWindow):
     subtitle_sig = Signal(str)
     audio_error_sig = Signal(str)
 
-    def __init__(self, cfg, kb_factory, rag_factory) -> None:
+    def __init__(self, cfg, kb_factory, rag_factory,
+                 rehearsal_rag_factory=None) -> None:
         super().__init__()
         self.cfg = cfg
         self._kb_factory = kb_factory
         self._rag_factory = rag_factory
+        self._rehearsal_rag_factory = rehearsal_rag_factory  # 审查 I7：彩排独立会话
         self._rag = None
+        self._rehearsal_rag = None
         self._recorder = None  # main.py 注入；未注入时导出按钮禁用逻辑依赖它
         self.overlay = OverlayWindow()
         self.subtitle_sig.connect(lambda t: self.overlay.set_subtitle(t))
@@ -26,7 +29,8 @@ class MainWindow(QMainWindow):
             lambda m: self.overlay.show_status(f"音频异常：{m}，请重新开始监听"))
         self._worker = None
         self._pipeline = None
-        self.tray = None      # main.py 注入（急隐藏需要同时藏托盘）
+        self.bridge = None      # rebind_hotkeys() 创建/重建（审查 I3c）
+        self.tray = None        # main.py 注入（急隐藏需要同时藏托盘）
         self._hidden = False
         self.setWindowTitle("Notes")   # 对外中性标题（spec §6.5）
         self.resize(720, 480)
@@ -92,18 +96,65 @@ class MainWindow(QMainWindow):
         from app.settings_dialog import SettingsDialog
         dlg = SettingsDialog(self.cfg, parent=self)
         if dlg.exec():
+            self._apply_settings()
             self.statusBar().showMessage("已保存")
+
+    def _apply_settings(self) -> None:
+        """审查 I3：设置保存后立即生效——重建 LLM 客户端、重绑热键。"""
+        from core.generator import LLMClient
+        for rag in (self._rag, self._rehearsal_rag):
+            if rag is not None:
+                rag.llm = LLMClient(self.cfg.llm_base_url, self.cfg.llm_api_key,
+                                    self.cfg.llm_model)
+        self.rebind_hotkeys()
+
+    def rebind_hotkeys(self) -> None:
+        """审查 I3c/I4：按当前配置重建全局热键；非法组合回退默认，绝不崩溃。"""
+        from app.hotkey import HotkeyBridge
+        if self.bridge is not None:
+            self.bridge.stop()
+        try:
+            nb = HotkeyBridge(self.cfg.hotkey, self.cfg.hide_hotkey)
+        except Exception:
+            self.statusBar().showMessage("热键无效，已回退默认组合")
+            nb = HotkeyBridge("ctrl+alt+space", "ctrl+alt+h")
+        nb.pressed.connect(self._on_hotkey)
+        nb.hidden.connect(self._on_hide)
+        self.bridge = nb
 
     def _open_wizard(self) -> None:
         from app.wizard import ModelWizard
         ModelWizard(self.cfg, parent=self).exec()
 
+    def maybe_first_run_wizard(self) -> None:
+        """审查 I10：模型缺失时首启自动弹下载向导（spec §3/§8）。"""
+        from core.downloader import models_ready
+        if not models_ready(self.cfg.models_dir):
+            self._open_wizard()
+
     def _on_hide(self) -> None:
-        """急隐藏（spec §6.5）：悬浮窗+托盘同时隐/显，再按一次恢复。"""
+        """急隐藏（spec §6.5/§1）：一切可见痕迹消失——主窗口+悬浮窗+托盘。"""
         self._hidden = not self._hidden
+        self.setVisible(not self._hidden)
         self.overlay.setVisible(not self._hidden)
         if self.tray is not None:
             self.tray.setVisible(not self._hidden)
+
+    def shutdown(self) -> None:
+        """审查 I2：退出前清理全局热钩与线程，避免进程残留。"""
+        if self._pipeline is not None:
+            self._pipeline.stop()
+        if self.bridge is not None:
+            self.bridge.stop()
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.wait(2000)
+
+    def quit_app(self) -> None:
+        self.shutdown()
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
 
     def _export_session(self) -> None:
         from PySide6.QtWidgets import QFileDialog
@@ -122,10 +173,12 @@ class MainWindow(QMainWindow):
             self._pipeline = None
             self.statusBar().showMessage("已停止监听")
             return
+        self._rehearsal_rag = None  # 回到正式会话
         transcriber = FunasrTranscriber(self.cfg.models_dir)
-        source = LiveAudioSource()
+        source = LiveAudioSource(device_name=self.cfg.audio_device or None)  # 审查 I3b
         self._rag = self._rag or self._rag_factory()
-        self._pipeline = AudioPipeline(source, transcriber, self._rag.buffer, recorder=self._recorder)
+        self._pipeline = AudioPipeline(source, transcriber, self._rag.buffer,
+                                       recorder=getattr(self._rag, "recorder", self._recorder))
         self._pipeline.on_subtitle = self.subtitle_sig.emit  # 管线线程安全 emit
         self._pipeline.on_error = self.audio_error_sig.emit
         self._pipeline.start()
@@ -141,21 +194,29 @@ class MainWindow(QMainWindow):
 
     def start_rehearsal(self, wav_path) -> None:
         """彩排模式（spec §5④）：wav 按真实时长回放，链路与监听完全一致，
-        不接真实设备——首次真实面试前用它全链路验证。"""
+        不接真实设备——首次真实面试前用它全链路验证。审查 I7：独立会话与记录。"""
         from core.capture import WavFileSource
         from core.pipeline import AudioPipeline
         from core.transcriber import FunasrTranscriber
         if self._pipeline is not None:
             self._pipeline.stop()
         transcriber = FunasrTranscriber(self.cfg.models_dir)
-        self._rag = self._rag or self._rag_factory()
+        if self._rehearsal_rag_factory is not None:
+            self._rehearsal_rag = self._rehearsal_rag_factory()
+        if self._active_rag() is None:  # 无工厂且尚未建过会话
+            self._rag = self._rag_factory()
+        rag = self._active_rag()
         self._pipeline = AudioPipeline(WavFileSource(wav_path), transcriber,
-                                       self._rag.buffer, recorder=self._recorder)
+                                       rag.buffer, recorder=getattr(rag, "recorder", self._recorder))
         self._pipeline.on_subtitle = self.subtitle_sig.emit
         self._pipeline.on_error = self.audio_error_sig.emit
         self._pipeline.start()
         self.overlay.show()
         self.statusBar().showMessage("彩排中")
+
+    def _active_rag(self):
+        """审查 I7：热键作用于当前活跃会话（彩排中 → 彩排会话）。"""
+        return self._rehearsal_rag if self._rehearsal_rag is not None else self._rag
 
     # --- 热键→生成 ---
     def _on_hotkey(self) -> None:
@@ -164,12 +225,15 @@ class MainWindow(QMainWindow):
             return  # 上一轮未完成，忽略连按
         if self._pipeline is not None:
             self._pipeline.flush_pending()  # spec §6.6：先强刷 pending 语音再提取问题
-        if self._rag is None:
+        if self._active_rag() is None:
             self._rag = self._rag_factory()
-        self.overlay.show()
-        self._worker = GenerateWorker(self._rag)
+        if not self._hidden:  # 审查 I1：急隐藏态不弹悬浮窗
+            self.overlay.show()
+        self._worker = GenerateWorker(self._active_rag())
         self._worker.question.connect(self._on_question)
         self._worker.chunk.connect(self._on_chunk)
+        self._worker.notice.connect(
+            lambda m: self.overlay.show_status(m))  # 审查 I12：通用回答标记
         self._worker.done.connect(lambda: self.overlay.end_answer())
         self._worker.failed.connect(lambda m: self.overlay.show_status(f"生成失败：{m}，可重试"))
         self._worker.start()

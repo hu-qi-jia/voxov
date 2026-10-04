@@ -92,8 +92,23 @@ class LiveAudioSource:
     def __init__(self, device_name: str | None = None, block_ms: int = 100) -> None:
         self._device_name = device_name
         self._block_ms = block_ms
-        self._queue: queue.Queue[bytes | None] = queue.Queue()
+        # 审查 I8：有界环形缓冲 ~60s@100ms（spec §4/§8）——积压丢最旧，最新语音可达
+        self._queue: queue.Queue[bytes | None] = queue.Queue(maxsize=600)
         self._stopped = False
+
+    def _on_audio(self, in_data: bytes) -> None:
+        """入队；满则丢最旧再入（保证最新音频不被丢弃）。"""
+        try:
+            self._queue.put_nowait(in_data)
+        except queue.Full:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._queue.put_nowait(in_data)
+            except queue.Full:
+                pass
 
     def _pick_device(self, p):
         import pyaudiowpatch as pyaudio
@@ -120,7 +135,7 @@ class LiveAudioSource:
                     rate, ch = int(dev["defaultSampleRate"]), int(dev["maxInputChannels"])
 
                     def callback(in_data, frame_count, time_info, status):
-                        self._queue.put(in_data)
+                        self._on_audio(in_data)
                         return (None, pyaudio.paContinue)
 
                     stream = p.open(format=pyaudio.paInt16, channels=ch, rate=rate,

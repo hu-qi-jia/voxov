@@ -71,3 +71,31 @@ def test_get_chunks_returns_metadata(kb, tmp_path):
     rows = kb.get_chunks(hits)
     rid, text, heading, source = rows[0]
     assert source == "redis.md" and heading.startswith("Redis")
+
+# --- 审查修复轮 ---
+import threading
+
+def test_kb_usable_from_worker_thread(kb, tmp_path):
+    # 审查 C1：连接在主线程建、GenerateWorker 线程检索 → 不得抛 ProgrammingError
+    kb.ingest_file(_write(tmp_path, "redis.md"))
+    errs: list[Exception] = []
+    def work():
+        try:
+            q, = HashEmbedder(dim=512).encode(["主从复制"])
+            kb.vector_search(q, k=2)
+            kb.fts_search("定时快照", k=2)
+            kb.list_files()
+        except Exception as e:
+            errs.append(e)
+    t = threading.Thread(target=work)
+    t.start(); t.join()
+    assert errs == []
+
+def test_fts_search_matches_terms_not_whole_phrase(kb, tmp_path):
+    # 审查 I5：整句短语匹配对真实问题失效，应按词项 OR 命中
+    kb.ingest_file(_write(tmp_path, "mvcc.md",
+        "# MVCC\n\nInnoDB 通过 MVCC 实现快照读，undo log 支持回滚。\n"))
+    hits = kb.fts_search("MVCC 是什么", k=5)
+    assert len(hits) >= 1
+    rows = kb.get_chunks(hits)
+    assert any("MVCC" in r[1] for r in rows)
