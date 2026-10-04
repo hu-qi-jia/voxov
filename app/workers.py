@@ -28,6 +28,23 @@ class DownloadWorker(QThread):
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 
 
+class LoadWorker(QThread):
+    """转写器后台加载（Bug 2 / M7）：SenseVoice 加载 5–20s，不得卡 GUI 线程。"""
+    loaded = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, models_dir) -> None:
+        super().__init__()
+        self.models_dir = models_dir
+
+    def run(self) -> None:
+        try:
+            from core.transcriber import FunasrTranscriber
+            self.loaded.emit(FunasrTranscriber(self.models_dir))
+        except Exception as exc:
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+
+
 class GenerateWorker(QThread):
     chunk = Signal(str)      # 答案增量
     question = Signal(str)   # 提取到的问题（悬浮窗标题）

@@ -64,6 +64,10 @@ def test_wizard_heartbeat_label(qtbot, monkeypatch):
     qtbot.waitUntil(lambda: "[开始下载]" in wiz.log_view.toPlainText(), timeout=3000)
     wiz._tick_heartbeat()
     assert "下载中" in wiz.heart_label.text()
+    # 收尾必须等线程结束、信号送达——否则悬空投递+活动线程拖到解释器
+    # 退出期，PySide6 硬崩（exit 127），且毒化同一进程内后续所有退出。
+    qtbot.waitUntil(lambda: "全部完成" in wiz.log_view.toPlainText(), timeout=3000)
+    holder["w"].wait(3000)
 
 
 # --- 首启自动下载（开箱即用）：不弹窗，后台下载 + 状态灯 ---
@@ -106,8 +110,8 @@ def test_auto_download_starts_when_models_missing(win, qtbot, monkeypatch):
     win.maybe_auto_download()
     assert win._dl_worker is not None
     qtbot.waitUntil(lambda: "下载中" in win.model_status_label.text(), timeout=3000)
-    assert win._dl_worker.wait(3000)
-    qtbot.waitUntil(lambda: win._dl_worker is None or not win._dl_worker.isRunning(), timeout=3000)
+    # 等 finished_ok 送达（事件循环），不留未投递信号/活动定时器给拆除期
+    qtbot.waitUntil(lambda: "就绪" in win.model_status_label.text(), timeout=3000)
 
 
 def test_auto_download_skips_when_models_ready(win, qtbot):
@@ -140,7 +144,7 @@ def test_dl_heartbeat_ticks_elapsed(win, qtbot, monkeypatch):
     win.maybe_auto_download()
     win._tick_dl_heartbeat()
     assert "已" in win.model_status_label.text() and "s" in win.model_status_label.text()
-    win._dl_worker.wait(3000)
+    qtbot.waitUntil(lambda: "就绪" in win.model_status_label.text(), timeout=3000)
 
 
 # --- DownloadWorker：异常必须浮出为 failed 信号（Bug 1 根因 M6） ---
@@ -186,3 +190,104 @@ def test_download_worker_finished_ok_after_wait(qtbot, monkeypatch):
     w.start()
     assert w.wait(3000)
     qtbot.waitUntil(lambda: oks == [1], timeout=3000)
+
+
+# --- Bug 2：监听门禁 + 转写器后台加载 ---
+def test_load_worker_loaded_and_failed(qtbot, monkeypatch):
+    import core.transcriber as tr
+    from app.workers import LoadWorker
+
+    class _FT:
+        def transcribe(self, pcm, sample_rate=16000): return "x"
+
+    monkeypatch.setattr(tr, "FunasrTranscriber", lambda md: _FT())
+    w = LoadWorker(models_dir=None)
+    got = []
+    w.loaded.connect(got.append)
+    w.start()
+    qtbot.waitUntil(lambda: len(got) == 1 and isinstance(got[0], _FT), timeout=3000)
+
+    def raiser(md):
+        raise RuntimeError("模型损坏")
+
+    monkeypatch.setattr(tr, "FunasrTranscriber", raiser)
+    w2 = LoadWorker(models_dir=None)
+    fails = []
+    w2.failed.connect(fails.append)
+    w2.start()
+    qtbot.waitUntil(lambda: len(fails) == 1, timeout=3000)
+    assert "模型损坏" in fails[0]
+
+
+def test_start_listening_gated_when_models_missing(win, qtbot, monkeypatch):
+    import core.transcriber as tr
+    monkeypatch.setattr(dl, "models_ready", lambda md: False)
+
+    def boom(md):
+        raise AssertionError("门禁未生效：不应构造转写器")
+
+    monkeypatch.setattr(tr, "FunasrTranscriber", boom)
+    opened = []
+    win._open_wizard = lambda: opened.append(1)
+    win.start_listening()
+    assert win._pipeline is None
+    assert opened == [1]
+    assert "未就绪" in win.statusBar().currentMessage()
+
+
+def _patch_av(monkeypatch, transcriber_text="x"):
+    import core.capture as cap
+    import core.transcriber as tr
+    made = {}
+
+    class _FakeLive:
+        sample_rate = 16000
+        channels = 1
+        def __init__(self, device_name=None, block_ms=100):
+            made["device"] = device_name
+        def chunks(self):
+            return iter([])
+        def stop(self):
+            pass
+
+    class _FT:
+        def transcribe(self, pcm, sample_rate=16000):
+            return transcriber_text
+
+    monkeypatch.setattr(cap, "LiveAudioSource", _FakeLive)
+    monkeypatch.setattr(tr, "FunasrTranscriber", lambda md: _FT())
+    monkeypatch.setattr(dl, "models_ready", lambda md: True)
+    return made
+
+
+def test_start_listening_loads_async_and_passes_device(win, qtbot, monkeypatch):
+    made = _patch_av(monkeypatch)
+    win.cfg.audio_device = "Speakers (Realtek)"
+    win.start_listening()
+    assert not win.start_btn.isEnabled()        # 加载期间禁用（Bug 2：无响应观感）
+    qtbot.waitUntil(lambda: win._pipeline is not None, timeout=5000)
+    assert made["device"] == "Speakers (Realtek)"   # 审查 I3b 不回退
+    assert win.start_btn.isEnabled()                # 完成后恢复
+    win._pipeline.stop()
+    win._pipeline = None
+
+
+def test_start_listening_load_failure_surfaces(win, qtbot, monkeypatch):
+    import core.transcriber as tr
+    monkeypatch.setattr(dl, "models_ready", lambda md: True)
+    monkeypatch.setattr(tr, "FunasrTranscriber",
+                        lambda md: (_ for _ in ()).throw(RuntimeError("模型损坏")))
+    win.start_listening()
+    qtbot.waitUntil(lambda: "启动失败" in win.statusBar().currentMessage(), timeout=5000)
+    assert win._pipeline is None
+    assert win.start_btn.isEnabled()            # 失败后可重试
+    assert "启动失败" in win.overlay.status_label.text()
+
+
+def test_rehearsal_also_gated_when_models_missing(win, qtbot, monkeypatch, tmp_path):
+    monkeypatch.setattr(dl, "models_ready", lambda md: False)
+    opened = []
+    win._open_wizard = lambda: opened.append(1)
+    win.start_rehearsal(tmp_path / "x.wav")
+    assert win._pipeline is None
+    assert opened == [1]

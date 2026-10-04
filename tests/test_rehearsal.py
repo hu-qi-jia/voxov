@@ -45,9 +45,11 @@ def test_start_rehearsal_builds_pipeline_and_transcribes(win2, qtbot, tmp_path, 
             return "彩排文本"
 
     import core.transcriber as tr
+    import core.downloader as dl
     monkeypatch.setattr(tr, "FunasrTranscriber", lambda models_dir: FakeTranscriber())
+    monkeypatch.setattr(dl, "models_ready", lambda md: True)  # 门禁放行
     win2.start_rehearsal(wav)
-    assert win2._pipeline is not None
+    qtbot.waitUntil(lambda: win2._pipeline is not None, timeout=5000)  # 异步加载
     qtbot.waitUntil(lambda: len(win2._rag.buffer.entries) == 1, timeout=15000)
     assert win2._rag.buffer.entries[0].text == "彩排文本"
     win2._pipeline.stop()

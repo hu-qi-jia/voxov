@@ -115,28 +115,7 @@ def test_settings_apply_rebuilds_llm_client(win, qtbot, monkeypatch):
     assert w._rag.llm.model == "m9"
 
 
-# --- I3b：音频设备设置必须传到 LiveAudioSource ---
-def test_start_listening_passes_audio_device(win, qtbot, monkeypatch):
-    w, _ = win
-    import core.capture as cap
-    import core.transcriber as tr
-    made = {}
-    class _FakeLive:
-        sample_rate = 16000
-        channels = 1
-        def __init__(self, device_name=None, block_ms=100):
-            made["device"] = device_name
-        def chunks(self):
-            return iter([])
-        def stop(self): pass
-    class _FT:
-        def transcribe(self, pcm, sample_rate=16000): return "x"
-    monkeypatch.setattr(cap, "LiveAudioSource", _FakeLive)
-    monkeypatch.setattr(tr, "FunasrTranscriber", lambda md: _FT())
-    w.cfg.audio_device = "Speakers (Realtek)"
-    w.start_listening()
-    assert made["device"] == "Speakers (Realtek)"
-    w._pipeline = None
+# --- I3b：音频设备设置必须传到 LiveAudioSource（异步版见 test_download_flow.py）---
 
 
 # --- I3c + I4：热键改后即重绑；非法热键被拒绝/回退 ---
@@ -183,12 +162,15 @@ def test_rehearsal_uses_dedicated_rag_and_hotkey_follows(win, qtbot, tmp_path, m
     rehearse = _Rag()
     w._rehearsal_rag_factory = lambda: rehearse
     import core.transcriber as tr
+    import core.downloader as dl
     class _FT:
         def transcribe(self, pcm, sample_rate=16000): return "彩排"
     monkeypatch.setattr(tr, "FunasrTranscriber", lambda md: _FT())
+    monkeypatch.setattr(dl, "models_ready", lambda md: True)
     w.start_rehearsal(_wav1s(tmp_path))
     assert w._rehearsal_rag is rehearse
     assert w._active_rag() is rehearse
+    qtbot.waitUntil(lambda: w._pipeline is not None, timeout=5000)
     qtbot.waitUntil(lambda: len(rehearse.buffer.entries) == 1, timeout=15000)
     w._pipeline.stop()
     w._pipeline = None

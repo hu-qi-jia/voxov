@@ -29,6 +29,9 @@ class MainWindow(QMainWindow):
             lambda m: self.overlay.show_status(f"音频异常：{m}，请重新开始监听"))
         self._worker = None
         self._pipeline = None
+        self._load_worker = None     # Bug 2/M7：转写器后台加载
+        self._pending_build = None
+        self._pending_rehearse = False
         self.bridge = None      # rebind_hotkeys() 创建/重建（审查 I3c）
         self.tray = None        # main.py 注入（急隐藏需要同时藏托盘）
         self._hidden = False
@@ -60,6 +63,7 @@ class MainWindow(QMainWindow):
         start_btn = QPushButton("监听")
         start_btn.setProperty("accent", True)
         start_btn.clicked.connect(self.start_listening)
+        self.start_btn = start_btn
         self.rehearse_btn = QPushButton("彩排")
         self.rehearse_btn.clicked.connect(self._rehearse_clicked)
         wizard_btn = QPushButton("下载模型")
@@ -205,6 +209,8 @@ class MainWindow(QMainWindow):
             self.bridge.stop()
         if self._worker is not None and self._worker.isRunning():
             self._worker.wait(2000)
+        if self._load_worker is not None and self._load_worker.isRunning():
+            self._load_worker.wait(2000)
         self._stop_dl_heart()
         if self._dl_worker is not None and self._dl_worker.isRunning():
             self._dl_worker.wait(2000)
@@ -225,25 +231,31 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"已导出 {p}")
 
     def start_listening(self) -> None:
-        from core.capture import LiveAudioSource
-        from core.pipeline import AudioPipeline
-        from core.transcriber import FunasrTranscriber
         if self._pipeline is not None:
             self._pipeline.stop()
             self._pipeline = None
             self.statusBar().showMessage("已停止监听")
             return
+        if self._load_worker is not None and self._load_worker.isRunning():
+            return  # 加载中，忽略连点
+        from core.downloader import models_ready
+        if not models_ready(self.cfg.models_dir):   # Bug 2 门禁：缺模型不盲启
+            self.statusBar().showMessage("模型未就绪：正在下载或未开始，点“下载模型”查看")
+            self.overlay.show_status("模型未就绪，暂不能监听")
+            self._open_wizard()
+            return
         self._rehearsal_rag = None  # 回到正式会话
-        transcriber = FunasrTranscriber(self.cfg.models_dir)
-        source = LiveAudioSource(device_name=self.cfg.audio_device or None)  # 审查 I3b
         self._rag = self._rag or self._rag_factory()
-        self._pipeline = AudioPipeline(source, transcriber, self._rag.buffer,
-                                       recorder=getattr(self._rag, "recorder", self._recorder))
-        self._pipeline.on_subtitle = self.subtitle_sig.emit  # 管线线程安全 emit
-        self._pipeline.on_error = self.audio_error_sig.emit
-        self._pipeline.start()
-        self.overlay.show()
-        self.statusBar().showMessage("监听中：系统音频 → 字幕；Ctrl+Alt+Space 触发回答")
+        rag = self._rag
+
+        def build(tr):
+            from core.capture import LiveAudioSource
+            from core.pipeline import AudioPipeline
+            return AudioPipeline(LiveAudioSource(device_name=self.cfg.audio_device or None),  # 审查 I3b
+                                 tr, rag.buffer,
+                                 recorder=getattr(rag, "recorder", self._recorder))
+
+        self._load_and_start(build)
 
     def _rehearse_clicked(self) -> None:
         from PySide6.QtWidgets import QFileDialog
@@ -255,24 +267,68 @@ class MainWindow(QMainWindow):
     def start_rehearsal(self, wav_path) -> None:
         """彩排模式（spec §5④）：wav 按真实时长回放，链路与监听完全一致，
         不接真实设备——首次真实面试前用它全链路验证。审查 I7：独立会话与记录。"""
-        from core.capture import WavFileSource
-        from core.pipeline import AudioPipeline
-        from core.transcriber import FunasrTranscriber
         if self._pipeline is not None:
             self._pipeline.stop()
-        transcriber = FunasrTranscriber(self.cfg.models_dir)
+            self._pipeline = None
+        if self._load_worker is not None and self._load_worker.isRunning():
+            return
+        from core.downloader import models_ready
+        if not models_ready(self.cfg.models_dir):
+            self.statusBar().showMessage("模型未就绪：正在下载或未开始，点“下载模型”查看")
+            self.overlay.show_status("模型未就绪，暂不能彩排")
+            self._open_wizard()
+            return
         if self._rehearsal_rag_factory is not None:
             self._rehearsal_rag = self._rehearsal_rag_factory()
         if self._active_rag() is None:  # 无工厂且尚未建过会话
             self._rag = self._rag_factory()
         rag = self._active_rag()
-        self._pipeline = AudioPipeline(WavFileSource(wav_path), transcriber,
-                                       rag.buffer, recorder=getattr(rag, "recorder", self._recorder))
-        self._pipeline.on_subtitle = self.subtitle_sig.emit
-        self._pipeline.on_error = self.audio_error_sig.emit
-        self._pipeline.start()
-        self.overlay.show()
-        self.statusBar().showMessage("彩排中")
+
+        def build(tr):
+            from core.capture import WavFileSource
+            from core.pipeline import AudioPipeline
+            return AudioPipeline(WavFileSource(wav_path), tr, rag.buffer,
+                                 recorder=getattr(rag, "recorder", self._recorder))
+
+        self._load_and_start(build, rehearse=True)
+
+    # --- Bug 2 / M7：转写器后台加载，绝不冻结 GUI 线程 ---
+    def _load_and_start(self, build, rehearse: bool = False) -> None:
+        """连接必须用绑定方法（receiver=self）：窗口销毁时 Qt 自动断连，
+        否则队列信号投递到已死控件的闭包 → 访问违例。"""
+        from app.workers import LoadWorker
+        self._pending_build = build
+        self._pending_rehearse = rehearse
+        self.start_btn.setText("加载模型中…")
+        self.start_btn.setEnabled(False)
+        w = LoadWorker(self.cfg.models_dir)
+        self._load_worker = w
+        w.loaded.connect(self._on_loaded)
+        w.failed.connect(self._on_load_failed)
+        w.start()
+
+    def _on_loaded(self, tr) -> None:
+        try:
+            self._pipeline = self._pending_build(tr)
+            self._pipeline.on_subtitle = self.subtitle_sig.emit  # 管线线程安全 emit
+            self._pipeline.on_error = self.audio_error_sig.emit
+            self._pipeline.start()
+            self.overlay.show()
+            self.statusBar().showMessage(
+                "彩排中" if self._pending_rehearse
+                else "监听中：系统音频 → 字幕；Ctrl+Alt+Space 触发回答")
+        except Exception as exc:
+            self.statusBar().showMessage(f"启动失败：{exc}")
+            self.overlay.show_status(f"启动失败：{exc}")
+        finally:
+            self.start_btn.setEnabled(True)
+            self.start_btn.setText("监听")
+
+    def _on_load_failed(self, msg: str) -> None:
+        self.statusBar().showMessage(f"启动失败：{msg}")
+        self.overlay.show_status(f"启动失败：{msg}")
+        self.start_btn.setEnabled(True)
+        self.start_btn.setText("监听")
 
     def _active_rag(self):
         """审查 I7：热键作用于当前活跃会话（彩排中 → 彩排会话）。"""
