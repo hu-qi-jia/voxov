@@ -1,23 +1,45 @@
 # app/workers.py —— 后台生成 worker。所有 UI 更新经信号（队列连接）回主线程，
 # worker 线程内绝不直接碰 QWidget。
+import os
 import time
+from datetime import datetime
 
 from PySide6.QtCore import QThread, Signal
 
 
 class DownloadWorker(QThread):
-    """模型下载线程（Bug 1 / M6）：任何异常浮出为 failed，绝不静默死亡。"""
+    """模型下载线程（Bug 1 / M6）：任何异常浮出为 failed，绝不静默死亡。
+    下载全程同步落盘 data/download.log——冻结环境无控制台，故障靠它取证。"""
     line = Signal(str)
     finished_ok = Signal()
     failed = Signal(str)
 
-    def __init__(self, models_dir) -> None:
+    def __init__(self, models_dir, log_file=None) -> None:
         super().__init__()
         self.models_dir = models_dir
+        self._log_file = log_file
         self._t0 = time.monotonic()   # 创建即记起点（UI 心跳用）
 
     def elapsed(self) -> float:
         return time.monotonic() - self._t0
+
+    def _tee(self, msg: str) -> None:
+        self.line.emit(msg)
+        if self._log_file is not None:
+            try:
+                with open(self._log_file, "a", encoding="utf-8") as f:
+                    f.write(f"{datetime.now():%H:%M:%S} {msg}\n")
+            except OSError:
+                pass
+
+    def run(self) -> None:
+        try:
+            from core.downloader import ensure_models
+            self._tee(f"[启动] MODELSCOPE_CACHE={os.environ.get('MODELSCOPE_CACHE') or '(未设置)'}")
+            ensure_models(self.models_dir, self._tee)
+            self.finished_ok.emit()
+        except Exception as exc:
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
 
     def run(self) -> None:
         try:

@@ -40,6 +40,13 @@ def main() -> int:
     apply_theme(app)
     app.setQuitOnLastWindowClosed(False)
     cfg, kb, rag, recorder, rehearsal_factory = build_app()
+    # 单实例：两个实例同时自动下载同一目录会互相破坏
+    from app.instance import acquire_single_instance, release_single_instance
+    if not acquire_single_instance(cfg.data_dir):
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.warning(None, "Notes", "应用已在运行（请查看系统托盘图标）。")
+        return 1
+    app.aboutToQuit.connect(release_single_instance)
     from core.downloader import models_ready
     models_ok = models_ready(cfg.models_dir)
     win = MainWindow(cfg, kb_factory=lambda: kb, rag_factory=lambda: rag,

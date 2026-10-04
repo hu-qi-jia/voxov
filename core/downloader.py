@@ -20,7 +20,9 @@ def _download_modelscope(repo: str, dest: Path, log: Callable[[str], None]) -> N
     # 拦下 WinError 5 → E1022；且打包版保持自包含。setdefault 必须在 import 前——
     # modelscope SDK 在 import 期就创建缓存目录（E1022 发生处）。
     os.environ.setdefault("MODELSCOPE_CACHE", str(dest.parent / "_cache" / "modelscope"))
+    log("[初始化] 加载下载组件（首次较慢，约 1–2 分钟）…")
     from modelscope import snapshot_download
+    log("[初始化] 下载组件就绪")
     snapshot_download(repo, local_dir=str(dest))
 
 

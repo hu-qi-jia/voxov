@@ -248,7 +248,8 @@ class MainWindow(QMainWindow):
         from app.workers import DownloadWorker
         if self._dl_worker is not None and self._dl_worker.isRunning():
             return self._dl_worker
-        w = DownloadWorker(self.cfg.models_dir)
+        w = DownloadWorker(self.cfg.models_dir,
+                           log_file=self.cfg.data_dir / "download.log")
         w.failed.connect(self._on_dl_failed)
         w.finished_ok.connect(self._on_dl_ok)
         self._dl_worker = w

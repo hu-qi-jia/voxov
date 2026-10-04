@@ -294,6 +294,32 @@ def test_rehearsal_also_gated_when_models_missing(win, qtbot, monkeypatch, tmp_p
 
 
 # --- 缓存重定位：绝不写用户主目录（安全软件拦 WinError 5，E1022） ---
+def test_modelscope_import_progress_is_logged(monkeypatch, tmp_path):
+    """冻结环境 modelscope 导入极慢且可能卡死：日志必须暴露每一步。"""
+    import sys
+    import types
+    lines = []
+    fake = types.ModuleType("modelscope")
+    fake.snapshot_download = lambda repo, local_dir=None: None
+    monkeypatch.setitem(sys.modules, "modelscope", fake)
+    dl._download_modelscope("iic/x", tmp_path / "m" / "SenseVoiceSmall", lines.append)
+    assert any("加载下载组件" in m for m in lines)
+    assert any("下载组件就绪" in m for m in lines)
+
+
+def test_single_instance_second_launch_refuses(tmp_path):
+    from PySide6.QtCore import QLockFile
+    from app.instance import acquire_single_instance
+    ok1 = acquire_single_instance(tmp_path)
+    assert ok1
+    ok2 = acquire_single_instance(tmp_path)
+    assert not ok2                 # 第二个实例必须拒绝
+    from app.instance import release_single_instance
+    release_single_instance()
+    assert acquire_single_instance(tmp_path)   # 释放后可再取
+    release_single_instance()
+
+
 def test_modelscope_cache_relocated_into_models_dir(monkeypatch, tmp_path):
     import os
     import sys
