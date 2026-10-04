@@ -53,7 +53,7 @@ class WavFileSource:
                 break
             yield to_16k_mono(frames, self._native_rate, self._native_channels)
             if self._realtime:  # 等到本块时长走完再给下一块
-                remain = self._block_frames / 1000.0 - (time.monotonic() - started)
+                remain = self._block_frames / self._native_rate - (time.monotonic() - started)
                 if remain > 0:
                     time.sleep(remain)
 
