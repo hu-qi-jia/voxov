@@ -2,6 +2,9 @@
 #   ① 自适应噪声底：低音量系统音频不再被固定阈值判成静音（识别不出来的主因）
 #   ② 转写独立线程：长句转写不再阻塞采集循环（中断感的主因）
 #   ③ 最长持句 max_hold_sec：连续说话也定期落句，字幕保持流动
+#   ④ Silero 神经 VAD 门控（可选）：稳态噪声/音乐不再误触发出空气泡
+import re
+
 import queue
 import threading
 import time
@@ -27,7 +30,8 @@ class AudioPipeline:
     def __init__(self, source: AudioSource, transcriber: Transcriber,
                  buffer: SessionBuffer, recorder: SessionRecorder | None = None,
                  silence_sec: float = 1.0, min_speech_sec: float = 0.3,
-                 max_hold_sec: float = 12.0, min_rms: float = 150.0) -> None:
+                 max_hold_sec: float = 12.0, min_rms: float = 150.0,
+                 vad=None) -> None:
         self.source = source
         self.transcriber = transcriber
         self.buffer = buffer
@@ -36,6 +40,7 @@ class AudioPipeline:
         self.min_speech_sec = min_speech_sec
         self.max_hold_sec = max_hold_sec
         self.min_rms = min_rms
+        self.vad = vad             # sherpa-onnx Silero VAD（可选；缺模型退回 RMS）
         self.on_subtitle: Callable[[str], None] | None = None
         self.on_error: Callable[[str], None] | None = None
         self._stop = threading.Event()
@@ -70,7 +75,18 @@ class AudioPipeline:
                 if self._stop.is_set():
                     break
                 self._vad_block(block)
-            self._drain_speech()          # 采集结束：冲出最后一句
+            self._drain_speech()          # 采集结束：冲出最后一句（RMS 路径）
+            if self.vad is not None:      # 神经 VAD 路径：冲出缓冲里的尾巴
+                try:
+                    self.vad.flush()
+                    while not self.vad.empty():
+                        seg = self.vad.front
+                        self.vad.pop()
+                        pcm = (np.asarray(seg.samples) * 32768.0).astype(np.int16).tobytes()
+                        now = time.time()
+                        self._submit(pcm, now - len(pcm) / 2 / 16000, now)
+                except Exception:
+                    pass
             if self._utt_thread is not None:
                 self._utt_q.put(None)     # 哨兵：转写线程退出
                 self._utt_thread.join(timeout=10)  # run 返回 = 全部落定
@@ -79,6 +95,29 @@ class AudioPipeline:
                 self.on_error(str(exc))
 
     def _vad_block(self, block: bytes) -> None:
+        if self.vad is not None:
+            self._vad_block_neural(block)
+            return
+        self._vad_block_rms(block)
+
+    def _vad_block_neural(self, block: bytes) -> None:
+        """Silero 神经 VAD 分段：对稳态噪声/音乐不误触，比能量阈值鲁棒得多。"""
+        samples = np.frombuffer(block, dtype=np.int16).astype(np.float32) / 32768.0
+        try:
+            self.vad.accept_waveform(samples)
+            while not self.vad.empty():
+                seg = self.vad.front
+                self.vad.pop()
+                pcm = (np.asarray(seg.samples) * 32768.0).astype(np.int16).tobytes()
+                now = time.time()
+                dur = len(pcm) / 2 / 16000
+                self._submit(pcm, now - dur, now)
+        except Exception as exc:
+            if self.on_error:
+                self.on_error(f"VAD 异常: {exc}")
+            self.vad = None   # VAD 挂了退回 RMS 门控，链路不断
+
+    def _vad_block_rms(self, block: bytes) -> None:
         now = time.time()
         dur = len(block) / 2 / self.source.sample_rate
         level = rms(block)
@@ -108,12 +147,14 @@ class AudioPipeline:
             self._speech, self._speech_start = [], None
         if blocks and start is not None:
             end, self._last_activity = self._last_activity, time.time()
-            pcm = b"".join(blocks)
-            if self._utt_thread is not None and self._utt_thread.is_alive():
-                self._drained.clear()
-                self._utt_q.put((pcm, start, end))
-            else:
-                self._transcribe_one(pcm, start, end)   # 无消费者（测试/未启动）：同步
+            self._submit(b"".join(blocks), start, end)
+
+    def _submit(self, pcm: bytes, start: float, end: float) -> None:
+        if self._utt_thread is not None and self._utt_thread.is_alive():
+            self._drained.clear()
+            self._utt_q.put((pcm, start, end))
+        else:
+            self._transcribe_one(pcm, start, end)   # 无消费者（测试/未启动）：同步
 
     def flush_pending(self) -> None:
         """热键路径专用（spec §6.6）：立即转写未达静音阈值的 pending 语音。
@@ -145,7 +186,8 @@ class AudioPipeline:
                 if self.on_error:
                     self.on_error(str(exc))
                 return
-        if not text:
+        # 纯标点/纯符号的段（噪声或音乐残留）不进气泡
+        if not text or not re.search(r"[\w一-鿿]", text):
             return
         entry = TranscriptEntry(ts=start, end_ts=end, text=text)
         self.buffer.add_transcript(entry)

@@ -16,12 +16,12 @@ def _mk_tar(src_dir, members):
     return p
 
 
-def test_models_ready_requires_all_four_files(tmp_path):
+def test_models_ready_requires_all_files(tmp_path):
     assert dl.models_ready(tmp_path) is False
     (tmp_path / "asr").mkdir()
     (tmp_path / "asr" / "model.int8.onnx").write_bytes(b"x")
-    assert dl.models_ready(tmp_path) is False
     (tmp_path / "asr" / "tokens.txt").write_bytes(b"x")
+    (tmp_path / "asr" / "silero_vad.onnx").write_bytes(b"x")
     (tmp_path / "embed").mkdir()
     (tmp_path / "embed" / "model.onnx").write_bytes(b"x")
     assert dl.models_ready(tmp_path) is False

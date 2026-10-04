@@ -34,11 +34,12 @@ class LLMClient:
     连接保活：httpx.Client 实例持久复用（参考 VoxRecall 的 keepalive/warmup），
     每次调用不再重新 TCP+TLS 握手——首字延迟显著下降。"""
 
-    def __init__(self, base_url: str, api_key: str, model: str, timeout: float = 30.0) -> None:
+    def __init__(self, base_url: str, api_key: str, model: str,
+                 connect_timeout: float = 10.0, read_timeout: float = 90.0) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
-        self.timeout = timeout
+        self.timeout = httpx.Timeout(connect_timeout, read=read_timeout)
         self._transport = None  # 测试注入 MockTransport
         self._client: httpx.Client | None = None
 
@@ -53,6 +54,7 @@ class LLMClient:
                    "temperature": temperature, "max_tokens": max_tokens}
         headers = {"Authorization": f"Bearer {self.api_key}"}
         client = self._http()
+        streamed = False               # 已吐过首块：失败不再整发重试（会重复）
         last_err: Exception | None = None
         for _attempt in range(2):
             try:
@@ -74,9 +76,12 @@ class LLMClient:
                         except (KeyError, IndexError):
                             continue
                         if delta:
+                            streamed = True
                             yield delta
                     return
             except (httpx.HTTPError, KeyError) as exc:
+                if streamed:
+                    raise LLMError(f"生成中断（已收到部分内容）: {exc}") from exc
                 last_err = exc
         raise LLMError(f"LLM 调用失败（已重试 1 次）: {last_err}")
 

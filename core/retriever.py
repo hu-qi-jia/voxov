@@ -32,7 +32,7 @@ class Retriever:
         query = query.strip()
         if not query:
             return []
-        vec, = self.embedder.encode([query])
+        vec = self.embedder.encode_query(query)
         rankings = [
             [cid for cid, _ in self.kb.vector_search(vec, k=k)],
             self.kb.fts_search(query, k=k),

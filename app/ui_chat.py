@@ -1,15 +1,32 @@
-# app/ui_chat.py —— 监听页：对话流（VoxRecall/DSH 风格——头像+角色标签+分向气泡）。
+# app/ui_chat.py —— 监听页：对话流（DSH 风格，扁平单层面板，无嵌套盒子）。
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QTextBrowser, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QTextBrowser,
+                               QVBoxLayout, QWidget)
 
 from qfluentwidgets import (FluentIcon as FIF, ScrollArea, PushButton,
                             SwitchButton, SubtitleLabel, StrongBodyLabel,
-                            CaptionLabel, BodyLabel, CardWidget)
+                            CaptionLabel, BodyLabel)
+
+
+def _flat_panel(bg: str, border: str) -> QFrame:
+    """单层扁平面板：只留一层 1px 描边，杜绝盒子套盒子。"""
+    f = QFrame()
+    f.setStyleSheet(f"QFrame {{ background: {bg}; border: 1px solid {border};"
+                    f"border-radius: 10px; }}")
+    return f
+
+
+def _avatar(text: str, bg: str, fg: str, bd: str) -> QLabel:
+    a = QLabel(text)
+    a.setObjectName("bubble_avatar")
+    a.setFixedSize(30, 30)
+    a.setAlignment(Qt.AlignCenter)
+    a.setStyleSheet(f"background: {bg}; color: {fg}; border: 1px solid {bd};")
+    return a
 
 
 class InterviewerBubble(QWidget):
-    """面试官：右对齐，圆形头像在右，layer-3 圆角卡（DSH user 气泡）。"""
+    """面试官：右对齐，头像在右，layer-3 单层面板。"""
 
     def __init__(self, text: str, parent=None):
         super().__init__(parent)
@@ -22,68 +39,53 @@ class InterviewerBubble(QWidget):
         role.setObjectName("bubble_role")
         role.setAlignment(Qt.AlignRight)
         col.addWidget(role)
-        card = CardWidget(self)
-        card.setStyleSheet("background: #353638; border: 1px solid #3d3d40;"
-                           "border-radius: 10px;")
-        cl = QVBoxLayout(card)
-        cl.setContentsMargins(14, 10, 14, 10)
-        body = BodyLabel(text, card)
+        panel = _flat_panel("#353638", "#3d3d40")
+        pl = QVBoxLayout(panel)
+        pl.setContentsMargins(14, 10, 14, 10)
+        body = BodyLabel(text, panel)
         body.setWordWrap(True)
         body.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        cl.addWidget(body)
-        col.addWidget(card)
+        pl.addWidget(body)
+        col.addWidget(panel)
         row.addStretch(1)
         row.addLayout(col)
-        avatar = QLabel("面", self)
-        avatar.setObjectName("bubble_avatar")
-        avatar.setFixedSize(30, 30)
-        avatar.setAlignment(Qt.AlignCenter)
-        avatar.setStyleSheet("background: #2c2c2e; color: #adb2b8;"
-                             "border: 1px solid #3d3d40;")
-        row.addWidget(avatar, 0, Qt.AlignTop)
+        row.addWidget(_avatar("面", "#2c2c2e", "#adb2b8", "#3d3d40"), 0, Qt.AlignTop)
 
 
 class AnswerBubble(QWidget):
-    """回答：左对齐，蓝圈头像在左，layer-1 卡（DSH ai 气泡）+ markdown 流式正文。
-    正文为空时显示「正在生成…」占位，首个分块到达即清除。"""
+    """回答：左对齐，头像在左，layer-1 单层面板 + markdown 流式正文。
+    正文区高度随内容自适应（不留大空白）；空态显示「正在生成…」；
+    生成中断时 note 显示已截断提示。"""
 
     def __init__(self, question: str, parent=None):
         super().__init__(parent)
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 48, 0)
         row.setSpacing(10)
-        avatar = QLabel("答", self)
-        avatar.setObjectName("bubble_avatar")
-        avatar.setFixedSize(30, 30)
-        avatar.setAlignment(Qt.AlignCenter)
-        avatar.setStyleSheet("background: #1f2740; color: #7aaaff;"
-                             "border: 1px solid #34415b;")
-        row.addWidget(avatar, 0, Qt.AlignTop)
+        row.addWidget(_avatar("答", "#1f2740", "#7aaaff", "#34415b"), 0, Qt.AlignTop)
         col = QVBoxLayout()
         col.setSpacing(4)
         role = CaptionLabel("助手", self)
         role.setObjectName("bubble_role")
         col.addWidget(role)
-        card = CardWidget(self)
-        card.setStyleSheet("background: #232324; border: 1px solid #2c2c2e;"
-                           "border-radius: 10px;")
-        cl = QVBoxLayout(card)
-        cl.setContentsMargins(14, 10, 14, 10)
-        cl.setSpacing(6)
-        title = StrongBodyLabel(question, card)
+        panel = _flat_panel("#232324", "#2c2c2e")
+        pl = QVBoxLayout(panel)
+        pl.setContentsMargins(14, 10, 14, 10)
+        pl.setSpacing(6)
+        title = StrongBodyLabel(question, panel)
         title.setWordWrap(True)
-        cl.addWidget(title)
-        self.view = QTextBrowser(card)
+        pl.addWidget(title)
+        self.view = QTextBrowser(panel)
         self.view.setObjectName("answer")
         self.view.setOpenExternalLinks(False)
-        self.view.setMinimumHeight(24)
         self.view.setPlaceholderText("正在生成…")
-        cl.addWidget(self.view)
-        self.note = CaptionLabel("", card)
+        self.view.setFixedHeight(36)      # 空态占位高度；首个分块后自适应
+        pl.addWidget(self.view)
+        self.note = CaptionLabel("", panel)
         self.note.setObjectName("bubble_note")
         self.note.setWordWrap(True)
-        cl.addWidget(self.note)
-        col.addWidget(card)
+        pl.addWidget(self.note)
+        col.addWidget(panel)
         row.addLayout(col, 1)
         self._buf = ""
 
@@ -92,6 +94,25 @@ class AnswerBubble(QWidget):
             return
         self._buf += delta
         self.view.setMarkdown(self._buf)
+        self._fit_height()
+        self._parent_scroll_to_bottom()
+
+    def mark_interrupted(self) -> None:
+        if self._buf:
+            self.note.setText("生成中断——以上为已收到的部分，可稍后重试")
+
+    def _fit_height(self) -> None:
+        doc = self.view.document()
+        h = int(doc.size().height()) + 18
+        self.view.setFixedHeight(max(28, h))
+
+    def _parent_scroll_to_bottom(self) -> None:
+        p = self.parent()
+        while p is not None:
+            if hasattr(p, "scroll_to_bottom"):
+                p.scroll_to_bottom()
+                return
+            p = p.parent()
 
 
 class ChatPage(QWidget):

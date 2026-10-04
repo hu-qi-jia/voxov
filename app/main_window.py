@@ -298,9 +298,11 @@ class MainWindow(FluentWindow):
         def build(tr):
             from core.capture import LiveAudioSource
             from core.pipeline import AudioPipeline
+            from core.vad import make_silero_vad
             return AudioPipeline(LiveAudioSource(device_name=self.cfg.audio_device or None),
                                  tr, rag.buffer,
-                                 recorder=getattr(rag, "recorder", self._recorder))
+                                 recorder=getattr(rag, "recorder", self._recorder),
+                                 vad=make_silero_vad(self.cfg.models_dir))
 
         self._load_and_start(build)
 
@@ -334,8 +336,10 @@ class MainWindow(FluentWindow):
         def build(tr):
             from core.capture import WavFileSource
             from core.pipeline import AudioPipeline
+            from core.vad import make_silero_vad
             return AudioPipeline(WavFileSource(wav_path), tr, rag.buffer,
-                                 recorder=getattr(rag, "recorder", self._recorder))
+                                 recorder=getattr(rag, "recorder", self._recorder),
+                                 vad=make_silero_vad(self.cfg.models_dir))
 
         self._load_and_start(build, rehearse=True)
 
@@ -392,7 +396,7 @@ class MainWindow(FluentWindow):
         self._worker.question.connect(self._on_question)
         self._worker.chunk.connect(self._on_chunk)
         self._worker.notice.connect(self._on_notice)
-        self._worker.failed.connect(lambda m: self._info("error", "生成失败", f"{m}，可重试"))
+        self._worker.failed.connect(self._on_generate_failed)
         self._worker.start()
 
     # ---- 字幕/问答双写：对话流留档 + 悬浮窗实时 ----
@@ -414,6 +418,11 @@ class MainWindow(FluentWindow):
         if self._chat_answer is not None:
             self._chat_answer.append(delta)
             self.chat_page.scroll_to_bottom()
+
+    def _on_generate_failed(self, m: str) -> None:
+        self._info("error", "生成失败", f"{m}，可重试")
+        if self._chat_answer is not None:
+            self._chat_answer.mark_interrupted()
 
     def _on_notice(self, m: str) -> None:
         if self._chat_answer is not None:

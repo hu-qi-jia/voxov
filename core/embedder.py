@@ -11,12 +11,18 @@ class Embedder(Protocol):
 
     def encode(self, texts: list[str]) -> list[list[float]]: ...
 
+    def encode_query(self, query: str) -> list[float]:
+        return self.encode([query])[0]
+
 
 class HashEmbedder:
     """确定性哈希向量：不依赖模型，供单元测试与小规模开发调试。"""
 
     def __init__(self, dim: int = 512) -> None:
         self.dim = dim
+
+    def encode_query(self, query: str) -> list[float]:
+        return self.encode([query])[0]
 
     def encode(self, texts: list[str]) -> list[list[float]]:
         out = []
@@ -30,7 +36,13 @@ class HashEmbedder:
 
 
 class OnnxEmbedder:
-    """BAAI/bge-small-zh-v1.5 的 ONNX 导出，mean pooling + L2 归一化，dim=512。"""
+    """BAAI/bge-small-zh-v1.5 的 ONNX 导出，mean pooling + L2 归一化，dim=512。
+    查询侧加 bge 官方指令前缀（参考 VoxRecall：检索 query 必须带前缀）。"""
+
+    QUERY_PREFIX = "为这个句子生成表示以用于检索相关文章："
+
+    def encode_query(self, query: str) -> list[float]:
+        return self.encode([self.QUERY_PREFIX + query])[0]
 
     def __init__(self, model_dir: Path) -> None:
         import onnxruntime as ort

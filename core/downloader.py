@@ -23,8 +23,12 @@ TOKENIZER_URLS = [
     "https://hf-mirror.com/Xenova/bge-small-zh-v1.5/resolve/main/tokenizer.json",
     "https://huggingface.co/Xenova/bge-small-zh-v1.5/resolve/main/tokenizer.json",
 ]
+VAD_URLS = [
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
+    "https://ghproxy.cn/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
+]
 
-REQUIRED = ("asr/model.int8.onnx", "asr/tokens.txt",
+REQUIRED = ("asr/model.int8.onnx", "asr/tokens.txt", "asr/silero_vad.onnx",
             "embed/model.onnx", "embed/tokenizer.json")
 
 
@@ -93,5 +97,9 @@ def ensure_models(models_dir: Path, log: Callable[[str], None],
     if not (emb_dir / "tokenizer.json").exists():
         log("[下载] 分词器…")
         fetch(TOKENIZER_URLS, emb_dir / "tokenizer.json", progress)
+
+    if not (asr_dir / "silero_vad.onnx").exists():
+        log("[下载] 语音活动检测（VAD，约 2MB）…")
+        fetch(VAD_URLS, asr_dir / "silero_vad.onnx", progress)
 
     log("[完成] 全部模型就绪")
