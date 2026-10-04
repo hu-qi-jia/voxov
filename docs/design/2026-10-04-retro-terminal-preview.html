@@ -44,9 +44,9 @@
   /* ---------- 应用窗框 mockup ---------- */
   .win { border: 1px solid var(--line); }
   .win-title { display: flex; justify-content: space-between; align-items: center;
-               padding: 6px 14px; border-bottom: 1px solid var(--line); color: var(--fg-faint);
-               font-size: 12px; }
-  .win-title .glyphs span { margin-left: 12px; }
+               padding: 4px 14px; border-bottom: 1px solid var(--line); color: var(--fg-faint);
+               font-size: 13px; }
+  .win-title .glyphs span { margin-left: 18px; font-size: 15px; }
   .win-title .glyphs span:hover { color: var(--fg); }
 
   .nav { display: flex; gap: 28px; padding: 0 20px; border-bottom: 1px solid var(--line); }
@@ -57,7 +57,6 @@
   }
   .nav button:hover { color: var(--fg); }
   .nav button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
-  .nav .brand { color: var(--fg-faint); margin-right: auto; padding: 12px 0 10px; cursor: default; }
 
   .screen { display: none; padding: 20px; min-height: 430px; }
   .screen.on { display: block; }
@@ -73,7 +72,6 @@
 
   /* ---------- 监听页 ---------- */
   .listen-head { display: flex; align-items: center; gap: 18px; padding-bottom: 14px; }
-  .listen-head .gap { margin-left: auto; color: var(--fg-faint); font-size: 12px; }
   button.act {
     display: inline-flex; align-items: center; gap: 8px;
     background: none; border: 1px solid var(--line); color: var(--fg);
@@ -90,7 +88,8 @@
               align-items: center; justify-content: center; font-size: 11px; line-height: 1;
               color: var(--accent); }
   .chk input { position: absolute; opacity: 0; }
-  .chk input:checked + .box::after { content: "×"; }
+  .chk input:checked + .box::after { content: ""; display: block; width: 7px; height: 7px;
+                                     background: var(--accent); }
   .chk input:focus-visible + .box { outline: 1px dashed var(--accent); outline-offset: 2px; }
 
   .turn { padding: 14px 0; }
@@ -168,10 +167,9 @@
 <!-- ══════════════ hero：应用窗框（tab 可点） ══════════════ -->
 <section class="sec">
   <div class="win">
-    <div class="win-title"><span>notes</span><span class="glyphs"><span>—</span><span>□</span><span>×</span></span></div>
+    <div class="win-title"><span>voxov</span><span class="glyphs"><span>—</span><span>□</span><span>×</span></span></div>
 
     <div class="nav" role="tablist">
-      <span class="brand">notes</span>
       <button role="tab" aria-selected="true" data-s="listen">监听</button>
       <button role="tab" aria-selected="false" data-s="kb">知识库</button>
       <button role="tab" aria-selected="false" data-s="set">设置</button>
@@ -185,7 +183,6 @@
           <span>开始监听</span>
         </button>
         <label class="chk"><input type="checkbox" checked><span class="box"></span>自动作答</label>
-        <span class="gap">model: 就绪 · asr: sherpa-onnx</span>
       </div>
 
       <div class="turn">
@@ -253,6 +250,7 @@
           <div class="frow"><label>音频设备</label>
             <select><option>系统默认（回环）</option><option>扬声器 (Realtek Audio)</option></select><span></span></div>
           <div class="frow"><label>模型目录</label><input type="text" value="E:\个人项目\面试助手\models"><span></span></div>
+          <div class="frow"><label></label><span class="dl-meta">语音识别与向量检索模型统一存放于此</span><span></span></div>
           <div class="frow"><label>数据目录</label><input type="text" value="E:\个人项目\面试助手\data"><span></span></div>
         </div>
         <div class="save-row"><button class="act primary" id="save-btn">
