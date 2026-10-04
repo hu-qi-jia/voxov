@@ -47,6 +47,13 @@ def main() -> int:
         QMessageBox.warning(None, "Notes", "应用已在运行（请查看系统托盘图标）。")
         return 1
     app.aboutToQuit.connect(release_single_instance)
+    # 诊断：启动 45s 后把全部 Python 线程栈落盘（排查冻结环境 worker 卡点）
+    try:
+        import faulthandler
+        fh = open(cfg.data_dir / "threads_dump.log", "w", encoding="utf-8")
+        faulthandler.dump_traceback_later(45, exit=False, file=fh)
+    except Exception:
+        pass
     from core.downloader import models_ready
     models_ok = models_ready(cfg.models_dir)
     win = MainWindow(cfg, kb_factory=lambda: kb, rag_factory=lambda: rag,

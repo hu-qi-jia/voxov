@@ -307,6 +307,24 @@ def test_modelscope_import_progress_is_logged(monkeypatch, tmp_path):
     assert any("下载组件就绪" in m for m in lines)
 
 
+def test_modelscope_home_relocated(monkeypatch, tmp_path):
+    """E1022 拦的是 MODELSCOPE_HOME（SDK 配置目录 ~/.modelscope），非缓存目录。"""
+    import os
+    import sys
+    import types
+    captured = {}
+    fake = types.ModuleType("modelscope")
+
+    def snapshot_download(repo, local_dir=None):
+        captured["home"] = os.environ.get("MODELSCOPE_HOME")
+
+    fake.snapshot_download = snapshot_download
+    monkeypatch.setitem(sys.modules, "modelscope", fake)
+    monkeypatch.delenv("MODELSCOPE_HOME", raising=False)
+    dl._download_modelscope("iic/x", tmp_path / "m" / "SenseVoiceSmall", lambda m: None)
+    assert captured["home"] == str(tmp_path / "m" / "_cache" / "modelscope_home")
+
+
 def test_single_instance_second_launch_refuses(tmp_path):
     from PySide6.QtCore import QLockFile
     from app.instance import acquire_single_instance
