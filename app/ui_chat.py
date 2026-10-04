@@ -1,61 +1,15 @@
-# app/ui_chat.py —— 监听页：对话流（DSH 风格，扁平单层面板，无嵌套盒子）。
+# app/ui_chat.py —— 监听页：终端转写流（无气泡容器，1px 分割线）。
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QTextBrowser,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel, QPushButton,
+                               QScrollArea, QTextBrowser, QVBoxLayout, QWidget)
 
-from qfluentwidgets import (FluentIcon as FIF, ScrollArea, PushButton,
-                            SwitchButton, SubtitleLabel, StrongBodyLabel,
-                            CaptionLabel, BodyLabel)
+from app.icons import icon
 
-
-def _flat_panel(bg: str, border: str) -> QFrame:
-    """单层扁平面板：只留一层 1px 描边，杜绝盒子套盒子。"""
-    f = QFrame()
-    f.setStyleSheet(f"QFrame {{ background: {bg}; border: 1px solid {border};"
-                    f"border-radius: 10px; }}")
-    return f
-
-
-def _avatar(text: str, bg: str, fg: str, bd: str) -> QLabel:
-    a = QLabel(text)
-    a.setObjectName("bubble_avatar")
-    a.setFixedSize(30, 30)
-    a.setAlignment(Qt.AlignCenter)
-    a.setStyleSheet(f"background: {bg}; color: {fg}; border: 1px solid {bd};")
-    return a
-
-
-class InterviewerBubble(QWidget):
-    """面试官：右对齐，头像在右，layer-3 单层面板。"""
-
-    def __init__(self, text: str, parent=None):
-        super().__init__(parent)
-        row = QHBoxLayout(self)
-        row.setContentsMargins(48, 0, 0, 0)
-        row.setSpacing(10)
-        col = QVBoxLayout()
-        col.setSpacing(4)
-        role = CaptionLabel("面试官", self)
-        role.setObjectName("bubble_role")
-        role.setAlignment(Qt.AlignRight)
-        col.addWidget(role)
-        panel = _flat_panel("#353638", "#3d3d40")
-        pl = QVBoxLayout(panel)
-        pl.setContentsMargins(14, 10, 14, 10)
-        body = BodyLabel(text, panel)
-        body.setWordWrap(True)
-        body.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        pl.addWidget(body)
-        col.addWidget(panel)
-        row.addStretch(1)
-        row.addLayout(col)
-        row.addWidget(_avatar("面", "#2c2c2e", "#adb2b8", "#3d3d40"), 0, Qt.AlignTop)
+ACCENT = "#5af78e"
 
 
 class _AutoHeightBrowser(QTextBrowser):
-    """无边框、无滚动条的流式正文。
-    QTextBrowser 默认自带 StyledPanel 内框（QSS border:none 清不掉），
-    加上高度按旧宽度误算导致裁字+滚动条——三者叠加读起来像"文字被框住"。"""
+    """无边框、无滚动条的流式正文；高度按当前视口宽实排。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -65,51 +19,56 @@ class _AutoHeightBrowser(QTextBrowser):
         self.setOpenExternalLinks(False)
 
     def refit(self) -> None:
-        """按当前视口宽度实排正文，高度兜住全部内容。"""
         doc = self.document()
         doc.setTextWidth(self.viewport().width() or doc.textWidth())
         self.setFixedHeight(max(28, int(doc.size().height()) + 10))
 
-    def resizeEvent(self, ev) -> None:  # 宽度变了必须重排，否则按旧宽度算高会裁字
+    def resizeEvent(self, ev) -> None:
         super().resizeEvent(ev)
         if ev.oldSize().width() != self.width():
             self.refit()
 
 
-class AnswerBubble(QWidget):
-    """回答：左对齐，头像在左，layer-1 单层面板 + markdown 流式正文。
-    正文区高度随内容自适应（不留大空白）；空态显示「正在生成…」；
-    生成中断时 note 显示已截断提示。"""
+def _hline() -> QFrame:
+    f = QFrame()
+    f.setObjectName("hline")
+    f.setFrameShape(QFrame.HLine)
+    f.setFixedHeight(1)
+    return f
 
-    def __init__(self, question: str, parent=None):
+
+class InterviewerTurn(QWidget):
+    """面试官话轮：fg_dim 文本 + “›” 前缀。"""
+
+    def __init__(self, text: str, parent=None):
         super().__init__(parent)
-        row = QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 48, 0)
-        row.setSpacing(10)
-        row.addWidget(_avatar("答", "#1f2740", "#7aaaff", "#34415b"), 0, Qt.AlignTop)
-        col = QVBoxLayout()
-        col.setSpacing(4)
-        role = CaptionLabel("助手", self)
-        role.setObjectName("bubble_role")
-        col.addWidget(role)
-        panel = _flat_panel("#232324", "#2c2c2e")
-        pl = QVBoxLayout(panel)
-        pl.setContentsMargins(14, 10, 14, 10)
-        pl.setSpacing(6)
-        title = StrongBodyLabel(question, panel)
-        title.setWordWrap(True)
-        pl.addWidget(title)
-        self.view = _AutoHeightBrowser(panel)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 6, 0, 6)
+        lb = QLabel("› " + text, self)
+        lb.setObjectName("turn_q")
+        lb.setWordWrap(True)
+        lb.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(lb)
+
+
+class AnswerTurn(QWidget):
+    """回答话轮：markdown 正文（加粗渲染为 accent）+ 弱色标注行。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        col = QVBoxLayout(self)
+        col.setContentsMargins(0, 6, 0, 10)
+        col.setSpacing(6)
+        self.view = _AutoHeightBrowser(self)
         self.view.setObjectName("answer")
+        self.view.document().setDefaultStyleSheet(f"strong {{ color: {ACCENT}; }}")
         self.view.setPlaceholderText("正在生成…")
-        self.view.setFixedHeight(36)      # 空态占位高度；首个分块后自适应
-        pl.addWidget(self.view)
-        self.note = CaptionLabel("", panel)
-        self.note.setObjectName("bubble_note")
+        self.view.setFixedHeight(36)
+        col.addWidget(self.view)
+        self.note = QLabel("", self)
+        self.note.setObjectName("turn_note")
         self.note.setWordWrap(True)
-        pl.addWidget(self.note)
-        col.addWidget(panel)
-        row.addLayout(col, 1)
+        col.addWidget(self.note)
         self._buf = ""
 
     def append(self, delta: str) -> None:
@@ -134,50 +93,49 @@ class AnswerBubble(QWidget):
 
 
 class ChatPage(QWidget):
-    """监听页：头部操作 + 对话流。"""
+    """监听页：头行（开始监听 + 自动作答）+ 转写流。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("chat-page")
         root = QVBoxLayout(self)
-        root.setContentsMargins(24, 20, 24, 16)
+        root.setContentsMargins(28, 20, 28, 12)
         root.setSpacing(12)
 
         head = QHBoxLayout()
-        head.setSpacing(12)
-        self.start_btn = PushButton(FIF.MICROPHONE, "开始监听")
+        head.setSpacing(18)
+        self.start_btn = QPushButton(" 开始监听")
+        self.start_btn.setIcon(icon("mic", ACCENT))
         self.start_btn.setProperty("accent", True)
         head.addWidget(self.start_btn)
-        self.auto_switch = SwitchButton("自动作答", self)
+        self.auto_switch = QCheckBox("自动作答")
         self.auto_switch.setChecked(True)
         head.addWidget(self.auto_switch)
-        self.model_status_label = CaptionLabel("未下载", self)
-        self.model_status_label.setObjectName("model_status")
-        head.addWidget(self.model_status_label)
         head.addStretch(1)
         root.addLayout(head)
 
-        self.scroll = ScrollArea(self)
+        self.scroll = QScrollArea(self)
         self.scroll.setWidgetResizable(True)
-        self.scroll.enableTransparentBackground()
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setStyleSheet("QScrollArea { background: transparent; }")
         self.feed = QWidget()
         self.feed.setObjectName("feed")
         self.feed_lay = QVBoxLayout(self.feed)
         self.feed_lay.setContentsMargins(0, 0, 16, 8)
-        self.feed_lay.setSpacing(12)
+        self.feed_lay.setSpacing(0)
         self.feed_lay.addStretch(1)
         self.scroll.setWidget(self.feed)
         root.addWidget(self.scroll, 1)
 
-    # ---- 对话流 API ----
-    def add_interviewer(self, text: str) -> InterviewerBubble:
-        b = InterviewerBubble(text)
-        self.feed_lay.insertWidget(self.feed_lay.count() - 1, b)
+    def add_interviewer(self, text: str) -> InterviewerTurn:
+        t = InterviewerTurn(text)
+        self.feed_lay.insertWidget(self.feed_lay.count() - 1, t)
+        self.feed_lay.insertWidget(self.feed_lay.count() - 1, _hline())
         self.scroll_to_bottom()
-        return b
+        return t
 
-    def begin_answer(self, question: str) -> AnswerBubble:
-        b = AnswerBubble(question)
+    def begin_answer(self) -> AnswerTurn:
+        b = AnswerTurn()
         self.feed_lay.insertWidget(self.feed_lay.count() - 1, b)
         self.scroll_to_bottom()
         return b

@@ -68,9 +68,11 @@ class MainWindow(FluentWindow):
         self.page_rehearse = self._build_rehearse_page()
         self.addSubInterface(self.page_rehearse, FIF.PLAY, "彩排")
 
-        # 别名：既有测试与逻辑引用
+        # 别名：既有测试与逻辑引用（Task 8 兼容补丁：新监听页无状态标签，
+        # 落一个隐藏占位 QLabel 保 download 状态文案链路可用；Task 9 由 settings_page 接管）
         self.start_btn = self.chat_page.start_btn
-        self.model_status_label = self.chat_page.model_status_label
+        self.model_status_label = QLabel("", self)
+        self.model_status_label.hide()  # 不入 layout 的子控件默认几何在窗内，须隐藏防叠字/吞事件
         self.start_btn.clicked.connect(self.start_listening)
 
         self.navigationInterface.addItem(
@@ -390,8 +392,7 @@ class MainWindow(FluentWindow):
             self._pipeline.flush_pending()
         if self._active_rag() is None:
             self._rag = self._rag_factory()
-        self._chat_answer = self.chat_page.begin_answer(
-            self._last_utterance or "（手动触发生成）")
+        self._chat_answer = self.chat_page.begin_answer()
         self._worker = GenerateWorker(self._active_rag())
         self._worker.question.connect(self._on_question)
         self._worker.chunk.connect(self._on_chunk)
