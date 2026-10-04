@@ -1,5 +1,9 @@
 # core/session.py
+import time as _time
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Iterable
 
 
 @dataclass
@@ -43,3 +47,41 @@ def extract_question(entries: list[TranscriptEntry], now: float,
             boundary = i
     selected = entries[boundary + 1:] if boundary is not None else entries
     return "".join(x.text for x in selected).strip()
+
+
+@dataclass
+class QATurn:
+    question: str
+    sources: list[str]
+    answer: str
+    ts: float
+
+
+class SessionRecorder:
+    """面试全程记录 + md 导出（spec §5③）。"""
+
+    def __init__(self) -> None:
+        self.turns: list[QATurn] = []
+        self.transcripts: list[TranscriptEntry] = []
+
+    def add_transcript(self, entry: TranscriptEntry) -> None:
+        self.transcripts.append(entry)
+
+    def add_qa(self, question: str, contexts: Iterable, answer: str) -> None:
+        sources = [f"{c.source_file} › {c.heading_path}" for c in contexts]
+        self.turns.append(QATurn(question, sources, answer, _time.time()))
+
+    def export_markdown(self, path: Path) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lines = [f"# 面试记录 {datetime.now():%Y-%m-%d %H:%M}", ""]
+        lines.append("## 问答回顾")
+        for i, t in enumerate(self.turns, 1):
+            lines += [f"### 问 {i}（{datetime.fromtimestamp(t.ts):%H:%M:%S}）",
+                      t.question, "", "**答**：", t.answer, ""]
+            if t.sources:
+                lines += ["**检索来源**："] + [f"- {s}" for s in t.sources] + [""]
+        lines += ["## 全程转写", ""]
+        lines += [f"- [{datetime.fromtimestamp(x.ts):%H:%M:%S}] {x.text}" for x in self.transcripts]
+        lines.append("")
+        path.write_text("\n".join(lines), encoding="utf-8")
+        return path
