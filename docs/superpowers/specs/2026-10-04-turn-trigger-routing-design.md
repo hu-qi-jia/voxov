@@ -28,8 +28,7 @@ ASR 段落(1.5s 停顿分段=话轮)
   → rag.trigger():
      turn_class = classify_turn(话轮文本)
      statement → 不检索
-     其他      → 检索 k=3（本地；2026-10-05 修订：5→3，prompt 更短、首字延迟更低，
-                 RRF 排序下 top-3 覆盖度足够，弱相关块本就会被距离阈值拦下）
+     其他      → 检索 k=5（2026-10-05 复核：维持原值）
         use_refs = 有结果 且 (距离可靠 ? top_distance ≤ REF_DIST_MAX
                                         : FTS 命中)          # HashEmbedder 降级
         FTS 越过：查询含 ≥4 字词项精确命中时，可越过距离阈值（双保险）
@@ -85,7 +84,7 @@ REF_DIST_MAX = 1.05   # L2（单位向量）⇔ cos ≥ 0.45；彩排模式校�
 ```
 
 - `statement` → 不检索；
-- 其他 → `retrieve(k=3)`；
+- 其他 → `retrieve(k=5)`；
 - `use_refs = bool(contexts)` 且满足其一：
   - 距离可靠 且 `last_top_distance ≤ REF_DIST_MAX`；
   - 任一检出 chunk 的文本含查询中 ≥4 字词项（子串判定，防阈值误杀真命中）；
