@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DIST_APP = ROOT / "dist" / "notes-viewer"
 DATA = DIST_APP / "data"
+MODELS = DIST_APP / "models"
 BACKUP = ROOT / "build" / "dist_data_backup"
 
 
@@ -16,32 +17,39 @@ def main() -> int:
     if DATA.exists():
         if BACKUP.exists():
             shutil.rmtree(BACKUP)
-        shutil.copytree(DATA, BACKUP)
-        print(f"[备份] {DATA} -> {BACKUP}")
+        BACKUP.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(DATA, BACKUP / "data")
+        if MODELS.exists():
+            shutil.copytree(MODELS, BACKUP / "models")
+        print(f"[备份] {DATA} 与 {MODELS} -> {BACKUP}")
 
     code = subprocess.call([sys.executable, "-m", "PyInstaller",
                             "interview-assistant.spec", "--noconfirm"], cwd=ROOT)
     if code != 0:
-        print("[失败] PyInstaller 构建失败，尝试还原 data/")
+        print("[失败] PyInstaller 构建失败，尝试还原备份")
         if BACKUP.exists() and not DATA.exists():
-            shutil.copytree(BACKUP, DATA)
+            shutil.copytree(BACKUP / "data", DATA)
+        if BACKUP.exists() and not MODELS.exists():
+            shutil.copytree(BACKUP / "models", MODELS)
         return code
 
-    if BACKUP.exists():
-        DATA.mkdir(parents=True, exist_ok=True)
-        for item in BACKUP.iterdir():
-            dst = DATA / item.name
+    for name in ("data", "models"):
+        src, dst = BACKUP / name, ROOT / "dist" / "notes-viewer" / name
+        if not src.exists():
+            continue
+        dst.mkdir(parents=True, exist_ok=True)
+        for item in src.rglob("*"):
+            rel = item.relative_to(src)
+            target = dst / rel
             if item.is_dir():
-                shutil.copytree(item, dst, dirs_exist_ok=True)
+                target.mkdir(parents=True, exist_ok=True)
             else:
-                shutil.copyfile(item, dst)
-        lock = DATA / "app.lock"
+                shutil.copyfile(item, target)
+        lock = dst / "app.lock"
         if lock.exists():
             lock.unlink()          # 备份时可能带着退出残留的锁文件
-        shutil.rmtree(BACKUP)
-        print(f"[还原] 用户数据已回填 {DATA}")
-    else:
-        print("[跳过] 无既有用户数据")
+        print(f"[还原] {name} 已回填 {dst}")
+    shutil.rmtree(BACKUP)
     print("[完成] dist/notes-viewer")
     return 0
 

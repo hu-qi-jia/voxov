@@ -35,10 +35,25 @@ VAD_URLS = [
 REQUIRED = ("asr/model.int8.onnx", "asr/tokens.txt", "asr/silero_vad.onnx",
             "embed/model.onnx", "embed/tokenizer.json")
 
+# 最小尺寸守卫：1 字节占位/截断残留不算就绪（实测事故：假文件让下载被跳过、
+# 加载时才 Protobuf 报错）。低于阈值视为缺失，触发重下。
+MIN_SIZES = {
+    "asr/model.int8.onnx": 100 * 1024 * 1024,
+    "asr/tokens.txt": 10 * 1024,
+    "asr/silero_vad.onnx": 100 * 1024,
+    "embed/model.onnx": 1024 * 1024,
+    "embed/tokenizer.json": 100 * 1024,
+}
+
+
+def _file_ok(models_dir: Path, rel: str) -> bool:
+    p = models_dir / rel
+    return p.exists() and p.stat().st_size >= MIN_SIZES.get(rel, 1)
+
 
 def models_ready(models_dir: Path) -> bool:
-    """就绪 = 四个最终文件齐全（.part 临时文件不算数）。"""
-    return all((models_dir / rel).exists() for rel in REQUIRED)
+    """就绪 = 五个最终文件齐全且不低于最小尺寸（.part 临时文件不算数）。"""
+    return all(_file_ok(models_dir, rel) for rel in REQUIRED)
 
 
 def _fetch_to(urls: list[str], dest: Path, progress: Callable[[float], None] | None = None,
@@ -91,7 +106,7 @@ def ensure_models(models_dir: Path, log: Callable[[str], None],
     asr_dir = models_dir / "asr"
     emb_dir = models_dir / "embed"
 
-    if not all((asr_dir / f).exists() for f in ASR_FILES):
+    if not all(_file_ok(models_dir, f"asr/{f}") for f in ASR_FILES):
         log("[下载] 语音识别模型（约 250MB，一次即可）…")
         arch = models_dir / "asr_archive.tar.bz2"
         fetch(ASR_URLS, arch, progress, expected_magic=ASR_MAGIC)
@@ -104,15 +119,15 @@ def ensure_models(models_dir: Path, log: Callable[[str], None],
                     (asr_dir / Path(m.name).name).write_bytes(src.read())
         arch.unlink()
 
-    if not (emb_dir / "model.onnx").exists():
+    if not _file_ok(models_dir, "embed/model.onnx"):
         log("[下载] 向量模型（约 25MB）…")
         fetch(EMBED_URLS, emb_dir / "model.onnx", progress)
 
-    if not (emb_dir / "tokenizer.json").exists():
+    if not _file_ok(models_dir, "embed/tokenizer.json"):
         log("[下载] 分词器…")
         fetch(TOKENIZER_URLS, emb_dir / "tokenizer.json", progress)
 
-    if not (asr_dir / "silero_vad.onnx").exists():
+    if not _file_ok(models_dir, "asr/silero_vad.onnx"):
         log("[下载] 语音活动检测（VAD，约 2MB）…")
         fetch(VAD_URLS, asr_dir / "silero_vad.onnx", progress)
 

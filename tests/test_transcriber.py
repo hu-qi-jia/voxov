@@ -15,7 +15,7 @@ def test_fake_transcriber_returns_fixed():
     assert t.transcribe(b"\x00\x00" * 1600) == "你好"
 
 @pytest.mark.model
-def test_sherpa_real_model_chinese():
+def test_sherpa_real_model_chinese(real_app_root):
     from core.config import default_config
     from core.transcriber import SherpaTranscriber
     cfg = default_config()

@@ -16,7 +16,7 @@ def test_hash_embedder_empty_input():
     assert HashEmbedder().encode([]) == []
 
 @pytest.mark.model
-def test_onnx_embedder_real_model():
+def test_onnx_embedder_real_model(real_app_root):
     from core.embedder import OnnxEmbedder
     from core.config import default_config
     cfg = default_config()
