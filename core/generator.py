@@ -11,51 +11,26 @@ import httpx
 _CLIENT_POOL: dict[tuple, httpx.Client] = {}
 _POOL_LOCK = threading.Lock()
 
-SYSTEM_PROMPT = ("你是面试实时辅助。输出口语化中文，像求职者当场回答，可直接照读，"
-    "禁止书面腔和套话开场。分点输出，每点一句完整的话，关键词加粗。按重要性排序，"
-    "最重要的点放第一条。共 4-6 点，全篇不超过 250 字。优先使用参考资料，资料不足时用自身知识。")
-
-GENERIC_PROMPT = ("你是面试实时辅助。知识库中没有相关资料，凭你自己的知识与经历回答。"
-    "输出口语化中文，像求职者当场回答，可直接照读，禁止书面腔和套话开场。"
-    "分点输出，每点一句完整的话，关键词加粗。按重要性排序，最重要的点放第一条。"
-    "共 4-6 点，全篇不超过 250 字。禁止虚构或引用任何资料。")
-
-STATEMENT_PROMPT = ("你是面试实时辅助。面试官正在做陈述或铺垫，不是提问。"
-    "给出求职者此刻最该说的自然回应：一两句话即可，口语化、可直接照读，"
-    "顺势带出自己的相关经验或优势。不要分点，不要超过 80 字。")
-
-PRESET_PROMPT = ("你在面试实时辅助。下面给你的是求职者「自己的真实素材」，全部来自"
-    "他本人的知识库。请只依据这些素材，整理合并成一段连贯、口语化、可直接照读的"
-    "回答来回应问题。可以调整顺序与措辞使表达通顺，但绝对禁止编造素材之外的任何"
-    "事实、数字或经历。不要分点，篇幅控制在一分钟内能说完。")
+SYNTH_PROMPT = ("你在面试实时辅助。下面给你的是求职者「自己的真实资料」，来自他的知识库。"
+    "请只依据这些资料，整理合并成一段连贯、口语化、可直接照读的回答来回应问题。"
+    "可以调整顺序与措辞使表达通顺，但绝对禁止编造资料之外的任何事实、数字或经历。"
+    "不要分点，篇幅控制在一分钟内能说完。")
 
 
-def build_messages(question: str, contexts: list, history: list[tuple[str, str]],
-                   mode: str = "refs") -> list[dict]:
-    if mode == "statement":
-        system = STATEMENT_PROMPT
-    elif mode == "preset":
-        system = PRESET_PROMPT
-    elif mode == "generic":
-        system = GENERIC_PROMPT
-    else:
-        system = SYSTEM_PROMPT
+def build_messages(question: str, contexts: list,
+                   history: list[tuple[str, str]]) -> list[dict]:
+    """命中知识库的整理式 prompt：资料全量入 prompt，LLM 只做整理合并（禁编造）。"""
     parts: list[str] = []
-    if mode == "refs" and contexts:
+    if contexts:
         refs = "\n\n".join(
             f"[资料{i+1}] {c.source_file} › {c.heading_path}\n{c.text}"
             for i, c in enumerate(contexts))
-        parts.append(f"参考资料：\n{refs}")
-    if mode == "preset" and contexts:
-        mats = "\n\n".join(
-            f"[素材{i+1}]\n{c.text}" for i, c in enumerate(contexts))
-        parts.append(f"你的真实素材：\n{mats}")
+        parts.append(f"你的真实资料：\n{refs}")
     for q, a in history[-2:]:
         parts.append(f"之前的问题：{q}\n之前的回答：{a}")
-    label = "当前面试官发言" if mode == "statement" else "当前问题"
-    parts.append(f"{label}：{question}")
+    parts.append(f"当前问题：{question}")
     return [
-        {"role": "system", "content": system},
+        {"role": "system", "content": SYNTH_PROMPT},
         {"role": "user", "content": "\n\n".join(parts)},
     ]
 

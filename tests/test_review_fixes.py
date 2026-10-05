@@ -27,12 +27,19 @@ class _Kb:
 
 @pytest.fixture
 def win(qtbot, tmp_path, monkeypatch):
+    import time
+
     import core.config as cc
     monkeypatch.setattr(cc, "app_root", lambda: tmp_path)
     from core.config import default_config
+    from core.session import SessionBuffer, TranscriptEntry
     rag = _Rag()
     w = MainWindow(default_config(), kb_factory=lambda: _Kb(), rag_factory=lambda: rag)
     qtbot.addWidget(w)
+    w._listen_buffer = SessionBuffer()          # 预置监听缓冲：热键可提取话轮
+    now = time.time()
+    w._listen_buffer.add_transcript(
+        TranscriptEntry(now - 6, now - 4, "介绍一下你自己"))
     return w, rag
 
 

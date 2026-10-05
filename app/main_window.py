@@ -385,17 +385,28 @@ class MainWindow(QMainWindow):
 
     # ---- 热键 → 生成（并行）：每次触发独立 RagService + 独立回答气泡 ----
     def _on_hotkey(self) -> None:
+        import time as _time
         from app.workers import GenerateWorker
+        from core.session import extract_turn
         if self._pipeline is not None:
             self._pipeline.flush_pending()
+        # 话轮先在主线程提取：空话轮不建气泡、不启 worker——杜绝「正在生成…」僵尸
+        turn = ""
+        if self._listen_buffer is not None:
+            turn = extract_turn(self._listen_buffer.entries, _time.time())
+        if not turn:
+            self.set_status("未识别到问题——请先开始监听，等对方说完再触发", "warn")
+            return
         rag = self._rag_factory()
         rag.buffer = self._listen_buffer        # 与监听管线共用转写缓冲
         rag.history = list(self._last_history)  # 继承已完成问答的上下文
+        rag.pending_turn = turn                 # 主线程提取的话轮直达 trigger
         self._chat_answer = self.chat_page.begin_answer()
         worker = GenerateWorker(rag)
         worker.question.connect(self._on_question)
         worker.chunk.connect(self._on_chunk)
         worker.notice.connect(self._on_notice)
+        worker.missed.connect(self._on_missed)
         worker.failed.connect(self._on_generate_failed)
         worker.done.connect(lambda r=rag: self._remember_history(r))
         worker.finished.connect(lambda w=worker: self._workers.discard(w))
@@ -409,10 +420,8 @@ class MainWindow(QMainWindow):
     def _on_subtitle(self, t: str) -> None:
         self.chat_page.add_interviewer(t)
         self._last_utterance = t
-        from core.heuristics import classify_turn
-        if (self.chat_page.auto_switch.isChecked()
-                and classify_turn(t) != "chatter"):
-            self._on_hotkey()
+        if self.chat_page.auto_switch.isChecked():
+            self._on_hotkey()          # 不过滤：全部话轮走知识库检索（用户指示）
 
     def _on_question(self, q: str) -> None:
         if not q and self._chat_answer is not None:
@@ -422,6 +431,11 @@ class MainWindow(QMainWindow):
         if self._chat_answer is not None:
             self._chat_answer.append(delta)
             self.chat_page.scroll_to_bottom()
+
+    def _on_missed(self, m: str) -> None:
+        """未命中：气泡占位与标注替换为「知识库无对应内容」，不调 LLM。"""
+        if self._chat_answer is not None:
+            self._chat_answer.miss(m)
 
     def _on_generate_failed(self, m: str) -> None:
         self.set_status(f"生成失败：{m}", "error")

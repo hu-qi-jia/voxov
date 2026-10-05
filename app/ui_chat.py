@@ -103,6 +103,11 @@ class AnswerTurn(QWidget):
         if self._buf:
             self.note.setText("生成中断——以上为已收到的部分，可稍后重试")
 
+    def miss(self, msg: str) -> None:
+        """未命中：占位与标注替换为原因（无 LLM 输出）。"""
+        self.view.setPlaceholderText(msg)
+        self.note.setText(msg)
+
     def fail(self, msg: str) -> None:
         """失败可见化：有内容标注截断；空内容换掉「正在生成…」占位并说明原因。"""
         if self._buf:

@@ -64,6 +64,7 @@ class GenerateWorker(QThread):
     chunk = Signal(str)      # 答案增量
     question = Signal(str)   # 提取到的问题（悬浮窗标题）
     notice = Signal(str)     # 审查 I12：无知识库命中等状态提示
+    missed = Signal(str)     # 未命中：UI 将占位替换为该文案（不调 LLM）
     done = Signal()
     failed = Signal(str)
 
@@ -85,6 +86,8 @@ class GenerateWorker(QThread):
             notice = getattr(self.rag, "last_notice", "")
             if got_question and notice:
                 self.notice.emit(notice)
+            if got_question and getattr(self.rag, "last_missed", False):
+                self.missed.emit(notice)
             self.done.emit()
         except Exception as exc:
             self.failed.emit(str(exc))

@@ -28,12 +28,19 @@ class FakeKb:
 
 @pytest.fixture
 def win(qtbot, tmp_path, monkeypatch):
+    import time
+
     import core.config as cc
     monkeypatch.setattr(cc, "app_root", lambda: tmp_path)
     from core.config import default_config
+    from core.session import SessionBuffer, TranscriptEntry
     rag, kb = FakeRag(), FakeKb()
     w = MainWindow(default_config(), kb_factory=lambda: kb, rag_factory=lambda: rag)
     qtbot.addWidget(w)
+    w._listen_buffer = SessionBuffer()          # 预置监听缓冲：热键可提取话轮
+    now = time.time()
+    w._listen_buffer.add_transcript(
+        TranscriptEntry(now - 6, now - 4, "介绍一下你自己"))
     return w, rag
 
 
@@ -119,15 +126,16 @@ def test_subtitle_statement_auto_triggers_when_auto_on(win, monkeypatch):
     assert fired == [1]                     # 陈述也是实质话轮（路由 spec）
 
 
-def test_subtitle_chatter_never_triggers(win, monkeypatch):
+def test_subtitle_no_filtering_all_turns_trigger(win, monkeypatch):
+    """用户指示：不过滤招呼语——全部话轮走知识库检索。"""
     w, _ = win
     fired = []
     monkeypatch.setattr(w, "_on_hotkey", lambda: fired.append(1))
     w.subtitle_sig.emit("嗯好的")
-    assert fired == []
+    assert fired == [1]
     w.chat_page.auto_switch.setChecked(False)
     w.subtitle_sig.emit("说说 MySQL 索引")
-    assert fired == []
+    assert fired == [1]                          # 开关关：一律不触发
 
 
 def test_notice_passthrough_to_answer_note(win, qtbot):
@@ -264,3 +272,30 @@ def test_rebind_reports_registered_status(win, monkeypatch):
     monkeypatch.setattr(hk, "HotkeyBridge", stubs["partial"])
     w.rebind_hotkeys()
     assert "部分注册失败" in w.status_msg.text()
+
+
+def test_hotkey_with_no_listen_buffer_spawns_nothing(win):
+    """监听没开/无转写：不建气泡、不启 worker，状态行说明原因。"""
+    w, rag = win
+    w._listen_buffer = None
+    before = len(w._workers)
+    w._on_hotkey()
+    assert len(w._workers) == before
+    assert w._chat_answer is None
+    assert "未识别到问题" in w.status_msg.text()
+
+
+def test_hotkey_uses_fresh_turn_and_passes_to_rag(win, qtbot):
+    """有转写时：主线程提取话轮，经 pending_turn 直达 trigger。"""
+    import time
+    from core.session import TranscriptEntry
+    w, rag = win
+    w.show()
+    from core.session import SessionBuffer
+    w._listen_buffer = SessionBuffer()
+    now = time.time()
+    w._listen_buffer.add_transcript(TranscriptEntry(now - 6, now - 4, "介绍一下你自己"))
+    w._on_hotkey()
+    qtbot.waitUntil(lambda: rag.triggered == 1, timeout=3000)
+    assert getattr(rag, "pending_turn", "") == "介绍一下你自己"
+    assert w._chat_answer is not None
