@@ -32,7 +32,7 @@ def test_models_ready_requires_all_files(tmp_path):
 def test_ensure_models_downloads_and_extracts(tmp_path):
     calls = []
 
-    def fake_fetch(urls, dest, progress=None):
+    def fake_fetch(urls, dest, progress=None, **kw):
         calls.append((tuple(urls), dest.name))
         dest.parent.mkdir(parents=True, exist_ok=True)
         if dest.suffix == ".bz2":
@@ -88,3 +88,33 @@ def test_fetch_to_tries_all_mirrors_then_raises(tmp_path, monkeypatch):
                      tmp_path / "x.bin")
     assert len(errs) == 2                      # 两个镜像都试过
     assert not (tmp_path / "x.bin.part").exists()
+
+
+def test_fetch_to_rejects_bad_magic_and_falls_to_next_mirror(tmp_path, monkeypatch):
+    """镜像回 HTML 错误页时必须换源，而不是把垃圾内容当文件落盘（not a bzip2 根因）。"""
+    bodies = {0: b"<!-- error page -->", 1: b"BZh9valid-bz2"}
+    calls = []
+
+    class FakeResp:
+        def __init__(self, body):
+            self.body = body
+            self._read = False
+        def read(self, n):
+            if self._read:                  # 模拟流式：第二次读到 EOF
+                return b""
+            self._read = True
+            return self.body
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        headers = {}
+
+    def fake_urlopen(req, timeout):
+        calls.append(req.full_url)
+        return FakeResp(bodies[len(calls) - 1])
+
+    monkeypatch.setattr(dl.urllib.request, "urlopen", fake_urlopen)
+    dest = tmp_path / "a.tar.bz2"
+    dl._fetch_to(["https://bad.example/a", "https://good.example/a"],
+                 dest, expected_magic=b"BZh")
+    assert dest.read_bytes() == b"BZh9valid-bz2"     # 坏镜像被跳过，好源落盘
+    assert len(calls) == 2

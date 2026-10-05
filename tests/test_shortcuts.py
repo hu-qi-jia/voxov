@@ -1,4 +1,6 @@
 # tests/test_shortcuts.py —— 桌面快捷方式：脚本内容与创建失败路径
+import os
+
 import pytest
 
 
@@ -19,9 +21,13 @@ def test_create_desktop_shortcut_uses_runner(tmp_path, monkeypatch):
     from app import shortcuts
     monkeypatch.setattr(shortcuts, "_desktop_dir", lambda: str(tmp_path))
     calls = []
+    ps1_content = {}
 
     def fake_runner(cmd):
         calls.append(cmd)
+        with open(cmd[-1], "rb") as f:        # ps1 在 finally 里会被删，运行中取内容
+            ps1_content["head"] = f.read(3)
+            ps1_content["body"] = f.read().decode("utf-8-sig")
 
         class R:
             returncode = 0
@@ -32,6 +38,11 @@ def test_create_desktop_shortcut_uses_runner(tmp_path, monkeypatch):
     lnk = shortcuts.create_desktop_shortcut(runner=fake_runner)
     assert lnk == str(tmp_path / "voxov.lnk")
     assert calls and calls[0][0] == "powershell"
+    assert "-File" in calls[0]
+    # 脚本走 UTF-8 BOM 临时 .ps1（中文用户名路径经 -Command 会乱码）
+    assert ps1_content["head"] == b"\xef\xbb\xbf"            # BOM
+    assert str(tmp_path / "voxov.lnk") in ps1_content["body"]
+    assert not os.path.exists(calls[0][-1])                   # 用后即清
 
 
 def test_create_desktop_shortcut_failure_raises(tmp_path, monkeypatch):

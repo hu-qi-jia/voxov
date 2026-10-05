@@ -75,7 +75,8 @@ def main() -> int:
     tray = create_tray(win)
     win.tray = tray
     # 唤起通道：后续启动经此把首实例带到前台（含从急隐藏找回）
-    start_summon_server(lambda: win.reveal())
+    from app.instance import SUMMON_SERVER_NAME
+    start_summon_server(SUMMON_SERVER_NAME, lambda: win.reveal())
     return app.exec()
 
 

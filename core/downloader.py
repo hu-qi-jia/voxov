@@ -11,9 +11,12 @@ from typing import Callable
 ASR_URLS = [
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
     "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2",
+    "https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/"
+    "asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2",
     "https://ghproxy.cn/https://github.com/k2-fsa/sherpa-onnx/releases/download/"
     "asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2",
 ]
+ASR_MAGIC = b"BZh"          # 实测 ghproxy.cn 会回 HTML 错误页：下载后必须验魔数
 ASR_FILES = ("model.int8.onnx", "tokens.txt")
 EMBED_URLS = [
     "https://hf-mirror.com/Xenova/bge-small-zh-v1.5/resolve/main/onnx/model.onnx",
@@ -25,6 +28,7 @@ TOKENIZER_URLS = [
 ]
 VAD_URLS = [
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
+    "https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
     "https://ghproxy.cn/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
 ]
 
@@ -37,8 +41,11 @@ def models_ready(models_dir: Path) -> bool:
     return all((models_dir / rel).exists() for rel in REQUIRED)
 
 
-def _fetch_to(urls: list[str], dest: Path, progress: Callable[[float], None] | None = None) -> None:
-    """依次尝试镜像下载到 dest.part，成功后原子改名。"""
+def _fetch_to(urls: list[str], dest: Path, progress: Callable[[float], None] | None = None,
+              expected_magic: bytes | None = None) -> None:
+    """依次尝试镜像下载到 dest.part，成功后原子改名。
+    expected_magic：内容魔数校验（如 b'BZh'）——镜像回 HTML 错误页时换下一个源，
+    而不是把垃圾内容当文件落盘（实测「not a bzip2 file」的根因）。"""
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
     last_err: Exception | None = None
@@ -59,13 +66,20 @@ def _fetch_to(urls: list[str], dest: Path, progress: Callable[[float], None] | N
                             progress(min(1.0, done / total))
             if total and tmp.stat().st_size != total:
                 raise IOError(f"下载不完整：{tmp.stat().st_size}/{total}")
+            if expected_magic:
+                with open(tmp, "rb") as f:
+                    head = f.read(len(expected_magic))
+                if head != expected_magic:
+                    raise IOError(f"内容校验失败（拿到 {head!r}，疑似镜像错误页）")
             shutil.move(str(tmp), str(dest))
             return
         except Exception as exc:  # 换下一个镜像
             last_err = exc
             if tmp.exists():
                 tmp.unlink()
-    raise RuntimeError(f"下载失败（已尝试 {len(urls)} 个源）：{last_err}")
+    raise RuntimeError(
+        f"下载失败（已尝试 {len(urls)} 个源）：{last_err}。"
+        "提示：GitHub 直连通常需要系统代理开启")
 
 
 def ensure_models(models_dir: Path, log: Callable[[str], None],
@@ -80,7 +94,7 @@ def ensure_models(models_dir: Path, log: Callable[[str], None],
     if not all((asr_dir / f).exists() for f in ASR_FILES):
         log("[下载] 语音识别模型（约 250MB，一次即可）…")
         arch = models_dir / "asr_archive.tar.bz2"
-        fetch(ASR_URLS, arch, progress)
+        fetch(ASR_URLS, arch, progress, expected_magic=ASR_MAGIC)
         log("[解压] 语音识别模型…")
         asr_dir.mkdir(parents=True, exist_ok=True)
         with tarfile.open(arch, "r:bz2") as t:
