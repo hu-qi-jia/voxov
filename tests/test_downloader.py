@@ -16,7 +16,8 @@ def _mk_tar(src_dir, members):
     return p
 
 
-def test_models_ready_requires_all_files(tmp_path):
+def test_models_ready_requires_all_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(dl, "MIN_SIZES", {rel: 1 for rel in dl.REQUIRED})
     assert dl.models_ready(tmp_path) is False
     (tmp_path / "asr").mkdir()
     (tmp_path / "asr" / "model.int8.onnx").write_bytes(b"x")
@@ -53,7 +54,8 @@ def test_ensure_models_downloads_and_extracts(tmp_path):
     assert not (tmp_path / "asr_archive.tar.bz2").exists()   # 归档用后即删
 
 
-def test_ensure_models_skips_when_ready(tmp_path):
+def test_ensure_models_skips_when_ready(tmp_path, monkeypatch):
+    monkeypatch.setattr(dl, "MIN_SIZES", {rel: 1 for rel in dl.REQUIRED})
     for rel in dl.REQUIRED:
         f = tmp_path / rel
         f.parent.mkdir(parents=True, exist_ok=True)

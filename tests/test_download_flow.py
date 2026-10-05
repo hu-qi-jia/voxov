@@ -48,7 +48,8 @@ def test_auto_download_starts_when_models_missing(win, qtbot, monkeypatch):
     qtbot.waitUntil(lambda: "模型已就绪" in win.status_msg.text(), timeout=3000)
 
 
-def test_auto_download_skips_when_models_ready(win, qtbot):
+def test_auto_download_skips_when_models_ready(win, qtbot, monkeypatch):
+    monkeypatch.setattr(dl, "MIN_SIZES", {rel: 1 for rel in dl.REQUIRED})
     for rel in dl.REQUIRED:                    # 新布局：asr/embed 四文件
         f = win.cfg.models_dir / rel
         f.parent.mkdir(parents=True, exist_ok=True)

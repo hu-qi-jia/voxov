@@ -34,6 +34,7 @@ def test_device_combo_has_default(qtbot, tmp_path, monkeypatch):
 def test_refresh_models_state_ready(qtbot, tmp_path, monkeypatch):
     import core.downloader as dl
     p, cfg, _ = _page(qtbot, tmp_path, monkeypatch)
+    monkeypatch.setattr(dl, "MIN_SIZES", {rel: 1 for rel in dl.REQUIRED})
     for rel in dl.REQUIRED:
         f = cfg.models_dir / rel
         f.parent.mkdir(parents=True, exist_ok=True)
@@ -51,6 +52,7 @@ def test_download_request_signal(qtbot, tmp_path, monkeypatch):
 def test_dl_progress_and_ok_flow(qtbot, tmp_path, monkeypatch):
     import core.downloader as dl
     p, cfg, _ = _page(qtbot, tmp_path, monkeypatch)
+    monkeypatch.setattr(dl, "MIN_SIZES", {rel: 1 for rel in dl.REQUIRED})
     for rel in dl.REQUIRED:  # app_root 已重定向，须在沙箱 models_dir 预置齐全文件
         f = cfg.models_dir / rel
         f.parent.mkdir(parents=True, exist_ok=True)
