@@ -28,7 +28,8 @@ def build_app():
     def make_rag(recorder):
         return RagService(Retriever(kb, embedder),
                           LLMClient(cfg.llm_base_url, cfg.llm_api_key, cfg.llm_model),
-                          recorder=recorder)
+                          recorder=recorder,
+                          log_file=cfg.data_dir / "rag.log")
 
     recorder = SessionRecorder(sessions_dir=cfg.sessions_dir)          # 审查 I7：落盘
     rag = make_rag(recorder)

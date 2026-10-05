@@ -61,11 +61,14 @@ def build_qss() -> str:
     QCheckBox::indicator:checked {{ background: {t['accent']};
         border: 1px solid {t['fg_dim']}; }}
 
-    /* ---- 表格：无竖线、行间 1px、整行反白选中 ---- */
+    /* ---- 表格：无竖线、行间 1px、选中为微绿衬底（不反白成矩形） ---- */
     QTableView {{ background: transparent; border: none; gridline-color: transparent;
-        selection-background-color: {t['fg']}; selection-color: {t['bg']}; }}
+        outline: none;
+        selection-background-color: rgba(90, 247, 142, 0.10);
+        selection-color: {t['fg']}; }}
     QTableView::item {{ padding: 10px 12px; border-bottom: 1px solid {t['line_soft']}; }}
-    QTableView::item:selected {{ background: {t['fg']}; color: {t['bg']}; }}
+    QTableView::item:selected {{ background: rgba(90, 247, 142, 0.10);
+        color: {t['fg']}; }}
     QHeaderView::section {{ background: transparent; border: none;
         border-bottom: 1px solid {t['line']}; padding: 8px 12px;
         color: {t['fg_faint']}; font-size: 12px; }}

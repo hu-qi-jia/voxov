@@ -122,8 +122,17 @@ class SettingsPage(QWidget):
             from app.shortcuts import create_desktop_shortcut
             lnk = create_desktop_shortcut()
             self._set_status(f"已创建桌面快捷方式：{lnk}", "ok")
-        except Exception as exc:
-            self._set_status(f"快捷方式创建失败：{exc}", "error")
+        except Exception:
+            # 本机实测：D:\ 根/桌面/开始菜单连普通文件都被 ACL 拦（安全软件防篡改）。
+            # 降级引导：打开资源管理器选中 exe，右键「发送到 → 桌面快捷方式」必成。
+            try:
+                from app.shortcuts import open_app_folder
+                open_app_folder()
+            except Exception:
+                pass
+            self._set_status(
+                "系统拦截了快捷方式写入——已打开应用所在文件夹："
+                "右键 notes-viewer.exe → 发送到 → 桌面快捷方式", "warn", hold=10000)
 
     # ---- 保存 ----
     def _on_save_clicked(self) -> None:

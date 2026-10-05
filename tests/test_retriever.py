@@ -86,3 +86,45 @@ def test_last_top_distance_none_on_empty_kb(tmp_path):
                   HashEmbedder(dim=512))
     r.retrieve("任何问题", k=5)
     assert r.last_top_distance is None
+
+
+# ---- 检索主路：只检索问题（标题直配 + 问题向量）+ 命中扩节 ----
+def test_match_sections_title_window(tmp_path):
+    r = Retriever(_kb(tmp_path), HashEmbedder(dim=512))
+    # 标题=「事务」（2字）短于 4 字滑窗，匹配不到；「MySQL」是根标题但无正文块
+    assert r.match_sections("MySQL 的事务隔离级别是什么") == []
+    assert r.match_sections("讲讲主从复制的机制") == [("doc.md", "Redis/主从复制", 1.0)]
+
+def test_match_sections_ancestor_covers_descendant(tmp_path):
+    doc = "# Redis\n\nRedis 是内存数据库。\n\n## 持久化\n\nRDB 是定时快照。\n"
+    kb = KnowledgeBase(tmp_path / "kb.db", HashEmbedder(dim=512))
+    p = tmp_path / "doc.md"
+    p.write_text(doc, encoding="utf-8")
+    kb.ingest_file(p)
+    r = Retriever(kb, HashEmbedder(dim=512))
+    assert r.match_sections("讲讲 Redis") == [("doc.md", "Redis", 1.0)]  # 根节命中，子树随扩节带入
+
+def test_match_sections_no_hit(tmp_path):
+    r = Retriever(_kb(tmp_path), HashEmbedder(dim=512))
+    assert r.match_sections("量子计算是什么") == []
+
+def test_section_materials_merges_whole_section(tmp_path):
+    kb = _kb(tmp_path)
+    r = Retriever(kb, HashEmbedder(dim=512))
+    mats = r.section_materials([("doc.md", "Redis/持久化", 0.9)])
+    assert len(mats) == 1
+    assert "RDB 是定时快照" in mats[0].text
+    assert "主写从读" not in mats[0].text               # 平级节不串
+    assert "MVCC" not in mats[0].text                  # 其它文件节不串
+
+def test_expand_to_sections_dedups_and_expands(tmp_path):
+    r = Retriever(_kb(tmp_path), HashEmbedder(dim=512))
+    from core.retriever import Retrieved
+    ctxs = [
+        Retrieved(1, "RDB 片段", "Redis/持久化", "doc.md", -1),
+        Retrieved(1, "RDB 另一片段", "Redis/持久化", "doc.md", -2),   # 同节（同块）：去重
+        Retrieved(3, "事务片段", "MySQL/事务", "doc.md", -3),
+    ]
+    mats = r.expand_to_sections(ctxs)
+    assert [m.heading_path for m in mats] == ["Redis/持久化", "MySQL/事务"]
+    assert "主写从读" not in mats[0].text                            # 扁平节：只带本节

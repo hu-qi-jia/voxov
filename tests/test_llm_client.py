@@ -39,7 +39,7 @@ def test_payload_and_headers():
     assert captured["url"].endswith("/chat/completions")
     assert captured["auth"] == "Bearer sk-test"
     assert captured["json"]["stream"] is True
-    assert captured["json"]["temperature"] == 0.3 and captured["json"]["max_tokens"] == 1024
+    assert captured["json"]["temperature"] == 0.2 and captured["json"]["max_tokens"] == 4096
 
 def test_malformed_sse_ignored():
     body = "data: not-json\n\ndata: {\"choices\": [{\"delta\": {\"content\": \"好\"}}]}\n\ndata: [DONE]\n\n"
@@ -161,5 +161,54 @@ def test_midstream_break_every_round_raises_llmerror():
         return httpx.Response(200, content=gen())
     c = make_client(always_break)
     c.max_rounds = 2
+    with pytest.raises(LLMError):
+        "".join(c.stream([{"role": "user", "content": "x"}]))
+
+
+# --- 零内容流（2026-10-05 事故根因）：deepseek-flash 为推理模型，思考吃满
+# max_tokens 后 finish=length 且 content 零输出；旧逻辑续写轮同预算重试再耗尽、
+# 轮次用尽后「安静收尾」——零 yield 零异常，UI 永远停在「正在生成…」。 ---
+def test_reasoning_exhausts_budget_grows_and_recovers():
+    """finish=length 且零正文：无可续写，加大 max_tokens 重发原始消息。"""
+    calls = []
+
+    def handler(req):
+        calls.append(json.loads(req.content))
+        if len(calls) == 1:
+            return httpx.Response(200, text=sse_end("length"))   # 思考耗尽，零 content
+        return httpx.Response(200, text=sse_chunk("真正的回答") + sse_end("stop"))
+
+    out = "".join(make_client(handler).stream([{"role": "user", "content": "x"}]))
+    assert out == "真正的回答"
+    assert calls[1]["max_tokens"] == 16384                 # 4096*4：给思考留足额度
+    assert calls[1]["messages"] == calls[0]["messages"]    # 重发原始消息（前缀为空，续写无意义）
+
+def test_zero_content_clean_stop_raises():
+    """流干净结束但零 content（服务端异常）：必须浮出 LLMError，不许静默空回。"""
+    def handler(req):
+        return httpx.Response(200, text=sse_end("stop"))
+    with pytest.raises(LLMError):
+        "".join(make_client(handler).stream([{"role": "user", "content": "x"}]))
+
+def test_explicit_budget_not_grown_zero_content_raises():
+    """调用方显式给预算（warmup 探针 max_tokens=1）：不许增长，零正文直接浮错。"""
+    calls = []
+
+    def handler(req):
+        calls.append(json.loads(req.content))
+        return httpx.Response(200, text=sse_end("length"))
+
+    with pytest.raises(LLMError):
+        "".join(make_client(handler).stream([{"role": "user", "content": "x"}],
+                                            max_tokens=1))
+    assert len(calls) == 1                                  # 未重发
+    assert calls[0]["max_tokens"] == 1
+
+def test_budget_growth_capped_zero_content_raises():
+    """预算到封顶仍是零正文：如实上报，不许无限重试。"""
+    def handler(req):
+        return httpx.Response(200, text=sse_end("length"))
+    c = make_client(handler)
+    c.max_rounds = 4
     with pytest.raises(LLMError):
         "".join(c.stream([{"role": "user", "content": "x"}]))

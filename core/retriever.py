@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 
 from core.embedder import Embedder
-from core.kb import KnowledgeBase
+from core.kb import KnowledgeBase, merge_section_texts
 
 
 @dataclass
@@ -58,4 +58,47 @@ class Retriever:
         for cid in sorted(fused, key=order.get):
             rid, text, heading, source = rows[cid]
             out.append(Retrieved(cid, text, heading, source, score=-order.get(cid, 999)))
+        return out
+
+    # ---- 检索主路：只检索问题（参考 personal-ai-memory「正文不向量化」） ----
+    def match_sections(self, query: str, limit: int = 2) -> list[tuple[str, str, float]]:
+        """问题向量匹配（主）+ 标题滑窗直配（辅）：并集去重，标题精确同名优先，
+        再按问题向量得分降序。返回 [(source_file, heading_path, score)]。"""
+        hits: dict[tuple[str, str], tuple[int, float]] = {}
+        for sf, hp, score in self.kb.match_sections_by_vec(query, limit=limit):
+            hits[(sf, hp)] = (1, score)
+        for sf, hp in self.kb.match_sections(query, limit=limit):
+            hits.setdefault((sf, hp), (0, 1.0))
+        ordered = sorted(hits.items(), key=lambda kv: (-kv[1][0], -kv[1][1], kv[0][1]))
+        return [(sf, hp, score) for (sf, hp), (_, score) in ordered[:limit]]
+
+    def section_materials(self, hits: list) -> list[Retrieved]:
+        """命中节 → 整节材料：子节全带、顺读拼接、拼缝去 50 字重叠、补回 #### 子标题。"""
+        out = []
+        for hit in hits:
+            sf, hp = hit[0], hit[1]
+            score = hit[2] if len(hit) > 2 else 0.0
+            rows = self.kb.section_chunks(sf, hp)
+            if not rows:
+                continue
+            text = merge_section_texts([(r[1], r[2]) for r in rows])
+            out.append(Retrieved(rows[0][0], text, hp, sf, score=score))
+        return out
+
+    def expand_to_sections(self, contexts: list[Retrieved]) -> list[Retrieved]:
+        """兜底路（正文向量/FTS）命中块 → 扩成所属问题节：只给半句话等于没给答案。"""
+        out: list[Retrieved] = []
+        seen: set[tuple[str, str]] = set()
+        for c in contexts:
+            sec = self.kb.chunk_section(c.chunk_id) or c.heading_path
+            key = (c.source_file, sec)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows = self.kb.section_chunks(c.source_file, sec)
+            if not rows:
+                out.append(c)
+                continue
+            text = merge_section_texts([(r[1], r[2]) for r in rows])
+            out.append(Retrieved(rows[0][0], text, sec, c.source_file, c.score))
         return out

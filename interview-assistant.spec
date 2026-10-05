@@ -28,6 +28,7 @@ a = Analysis(
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True,
           name="notes-viewer", debug=False,   # 对外中性名（spec §6.5）
-          bootloader_ignore_signals=False, strip=False, upx=False, console=False)
+          bootloader_ignore_signals=False, strip=False, upx=False, console=False,
+          icon="assets/voxov.ico")
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False,
                name="notes-viewer")

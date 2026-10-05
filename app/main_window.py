@@ -5,9 +5,9 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QStandardItem, QStandardItemModel
-from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QMainWindow, QPushButton,
-                               QStackedWidget, QTableView, QVBoxLayout, QWidget)
+from PySide6.QtGui import QIcon, QStandardItem, QStandardItemModel
+from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QHeaderView, QLabel, QMainWindow,
+                               QPushButton, QStackedWidget, QTableView, QVBoxLayout, QWidget)
 
 from app.icons import icon
 from app.settings_page import SettingsPage
@@ -51,6 +51,10 @@ class MainWindow(QMainWindow):
 
     # ---- UI ----
     def _build_ui(self) -> None:
+        from core.paths import assets_dir
+        logo = assets_dir() / "voxov_logo.png"
+        if logo.exists():
+            self.setWindowIcon(QIcon(str(logo)))
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
@@ -60,8 +64,8 @@ class MainWindow(QMainWindow):
         nav = QWidget()
         nav.setObjectName("nav")
         nav_lay = QHBoxLayout(nav)
-        nav_lay.setContentsMargins(28, 0, 28, 0)
-        nav_lay.setSpacing(24)
+        nav_lay.setContentsMargins(16, 0, 16, 0)   # 靠近窗口左侧
+        nav_lay.setSpacing(10)                     # 菜单项间距收紧
         self._stack = QStackedWidget()
         self.chat_page = ChatPage(self)
         self._page_kb = self._build_kb_page()
@@ -196,7 +200,10 @@ class MainWindow(QMainWindow):
         self.kb_model = QStandardItemModel(0, 2)
         self.kb_model.setHorizontalHeaderLabels(["文件", "块数"])
         self.kb_table.setModel(self.kb_model)
-        self.kb_table.horizontalHeader().setStretchLastSection(True)
+        hdr = self.kb_table.horizontalHeader()
+        hdr.setStretchLastSection(False)
+        hdr.setSectionResizeMode(0, QHeaderView.Stretch)            # 文件名铺满：不再截断成 01-AI…
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)   # 块数紧凑，离文件名远
         self.kb_table.setEditTriggers(QTableView.NoEditTriggers)
         self.kb_table.setSelectionBehavior(QTableView.SelectRows)
         self.kb_table.setSelectionMode(QTableView.SingleSelection)
@@ -391,11 +398,13 @@ class MainWindow(QMainWindow):
         self.set_status(f"音频异常，已停止监听：{m}", "error")
 
     # ---- 热键 → 生成（并行）：每次触发独立 RagService + 独立回答气泡 ----
-    def _on_hotkey(self) -> None:
+    def _on_hotkey(self, flush: bool = True) -> None:
         import time as _time
         from app.workers import GenerateWorker
         from core.session import extract_turn
-        if self._pipeline is not None:
+        # flush 仅手动热键需要（抢在静音阈值前冲出半句话）；自动作答的话轮
+        # 已是转写结果，flush 只会让主线程空等至多 6s（「点了没反应」的观感来源）
+        if flush and self._pipeline is not None:
             self._pipeline.flush_pending()
         # 话轮先在主线程提取：空话轮不建气泡、不启 worker——杜绝「正在生成…」僵尸
         turn = ""
@@ -408,13 +417,16 @@ class MainWindow(QMainWindow):
         rag.buffer = self._listen_buffer        # 与监听管线共用转写缓冲
         rag.history = list(self._last_history)  # 继承已完成问答的上下文
         rag.pending_turn = turn                 # 主线程提取的话轮直达 trigger
-        self._chat_answer = self.chat_page.begin_answer()
+        bubble = self.chat_page.begin_answer()
+        self._chat_answer = bubble              # 别名：仅指向最新气泡（调试/测试用）
         worker = GenerateWorker(rag)
-        worker.question.connect(self._on_question)
-        worker.chunk.connect(self._on_chunk)
-        worker.notice.connect(self._on_notice)
-        worker.missed.connect(self._on_missed)
-        worker.failed.connect(self._on_generate_failed)
+        # 信号闭包绑定各自的气泡：并行下旧 worker 的 chunk/miss/failed 绝不写进
+        # 新气泡，否则旧气泡收不到终态、永远停在「正在生成…」（2026-10-05 事故）。
+        worker.question.connect(lambda q, b=bubble: self._on_question(q, b))
+        worker.chunk.connect(lambda d, b=bubble: self._on_chunk(d, b))
+        worker.notice.connect(lambda m, b=bubble: self._on_notice(m, b))
+        worker.missed.connect(lambda m, b=bubble: self._on_missed(m, b))
+        worker.failed.connect(lambda m, b=bubble: self._on_generate_failed(m, b))
         worker.done.connect(lambda r=rag: self._remember_history(r))
         worker.finished.connect(lambda w=worker: self._workers.discard(w))
         self._workers.add(worker)
@@ -428,27 +440,22 @@ class MainWindow(QMainWindow):
         self.chat_page.add_interviewer(t)
         self._last_utterance = t
         if self.chat_page.auto_switch.isChecked():
-            self._on_hotkey()          # 不过滤：全部话轮走知识库检索（用户指示）
+            self._on_hotkey(flush=False)   # 不过滤：全部话轮走知识库检索（用户指示）
 
-    def _on_question(self, q: str) -> None:
-        if not q and self._chat_answer is not None:
-            self._chat_answer.note.setText("未识别到问题（稍后再按）")
+    def _on_question(self, q: str, bubble) -> None:
+        if not q:
+            bubble.note.setText("未识别到问题（稍后再按）")
 
-    def _on_chunk(self, delta: str) -> None:
-        if self._chat_answer is not None:
-            self._chat_answer.append(delta)
-            self.chat_page.scroll_to_bottom()
+    def _on_chunk(self, delta: str, bubble) -> None:
+        bubble.append(delta)      # 跟随由 ChatPage 钉底过滤器负责（上翻阅读时不拽回）
 
-    def _on_missed(self, m: str) -> None:
+    def _on_missed(self, m: str, bubble) -> None:
         """未命中：气泡占位与标注替换为「知识库无对应内容」，不调 LLM。"""
-        if self._chat_answer is not None:
-            self._chat_answer.miss(m)
+        bubble.miss(m)
 
-    def _on_generate_failed(self, m: str) -> None:
+    def _on_generate_failed(self, m: str, bubble) -> None:
         self.set_status(f"生成失败：{m}", "error")
-        if self._chat_answer is not None:
-            self._chat_answer.fail(m)
+        bubble.fail(m)
 
-    def _on_notice(self, m: str) -> None:
-        if self._chat_answer is not None:
-            self._chat_answer.note.setText(m)
+    def _on_notice(self, m: str, bubble) -> None:
+        bubble.note.setText(m)

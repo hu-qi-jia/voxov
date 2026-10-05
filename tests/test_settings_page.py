@@ -6,7 +6,7 @@ def _page(qtbot, tmp_path, monkeypatch):
     from app.settings_page import SettingsPage
     cfg = default_config()
     statuses = []
-    p = SettingsPage(cfg, set_status=lambda t, kind="info": statuses.append((t, kind)))
+    p = SettingsPage(cfg, set_status=lambda t, kind="info", hold=4000: statuses.append((t, kind)))
     qtbot.addWidget(p)
     return p, cfg, statuses
 
@@ -90,5 +90,8 @@ def test_shortcut_button_reports_failure(qtbot, tmp_path, monkeypatch):
     def boom():
         raise RuntimeError("boom")
     monkeypatch.setattr(sc, "create_desktop_shortcut", boom)
+    opened = []
+    monkeypatch.setattr(sc, "open_app_folder", lambda: opened.append(1))
     p.shortcut_btn.click()
-    assert any("失败" in t for t, _ in statuses)
+    assert any("拦截" in t and "发送到" in t for t, _ in statuses)   # 降级指引可见
+    assert opened == [1]                                            # 已自动打开所在文件夹

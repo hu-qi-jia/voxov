@@ -82,3 +82,12 @@ def create_desktop_shortcut(runner=None) -> str:
             return lnk
         errs.append(lnk)
     raise RuntimeError("快捷方式创建失败，尝试过：" + " → ".join(errs))
+
+
+def open_app_folder() -> None:
+    """降级引导：安全软件/ACL 拦截应用写 .lnk 时（实测本机三级全拒），
+    打开资源管理器并选中 exe——用户右键「发送到 → 桌面快捷方式」由
+    Explorer 这个可信进程执行写入，不受拦截。"""
+    target = sys.executable if getattr(sys, "frozen", False) else _module_dir()
+    subprocess.run(["explorer", "/select,", target], creationflags=CREATE_NO_WINDOW,
+                   check=False)

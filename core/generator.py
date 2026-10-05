@@ -11,10 +11,41 @@ import httpx
 _CLIENT_POOL: dict[tuple, httpx.Client] = {}
 _POOL_LOCK = threading.Lock()
 
-SYNTH_PROMPT = ("你在面试实时辅助。下面给你的是求职者「自己的真实资料」，来自他的知识库。"
-    "请只依据这些资料，整理合并成一段连贯、口语化、可直接照读的回答来回应问题。"
-    "可以调整顺序与措辞使表达通顺，但绝对禁止编造资料之外的任何事实、数字或经历。"
-    "不要分点，篇幅控制在一分钟内能说完。")
+MAX_BUDGET = 16384  # 预算增长封顶：推理模型的思考深度天花板
+
+# 资料不足以回答时模型只输出这个哨兵（参考 personal-ai-memory）：
+# 检索命中≠资料能答（如简历库里问 transformer），模型明说比硬编强。
+NO_ANSWER_SENTINEL = "[无法回答]"
+
+# 单次入 prompt 的材料总字数封顶（参考 personal-ai-memory aiMaterials：
+# 3000 字≈2000 token；整合任务材料过长只会加重推理、拖慢首字）。
+MAX_MATERIAL_CHARS = 4500
+
+SYNTH_PROMPT = ("你在面试现场实时辅助求职者。下面给你的是求职者「自己的真实资料」。"
+    "你的任务不是回答问题，而是把资料中与问题相关的片段整理合并成一段连贯、口语化、"
+    "可直接照读的话。可以调整顺序与措辞使表达通顺，但有几条硬约束：\n"
+    "1. 内容只能来自资料：绝对禁止编造、补充、推断资料之外的任何事实、数字或经历；"
+    "资料没写的一律不说。\n"
+    "2. 优先照抄原文表述，只在衔接处做最小改写；不要发挥、不要举例、不要延伸。\n"
+    "3. 数字、日期、专有名词、项目名必须与资料逐字一致，照抄不改："
+    "不换算、不四舍五入、不写「约」。\n"
+    "4. 只输出合并后的正文：不要开场白（如「好的」「根据资料」），不要复述问题，"
+    "不要解释思路，不要分点，不要任何 markdown 标记。\n"
+    "5. 篇幅控制在一分钟内能说完。\n"
+    f"6. 资料不足以回答当前问题时，只输出这五个字：{NO_ANSWER_SENTINEL}")
+
+
+def cap_materials(contexts: list, max_chars: int = MAX_MATERIAL_CHARS) -> list:
+    """材料总字数封顶：超限的尾部整块丢弃，不切半截——半句话喂给模型比少一块更糟。
+    首块超限也保留（能被检索出来就是最相关的，丢弃等于无米下锅）。"""
+    out: list = []
+    total = 0
+    for c in contexts:
+        if out and total + len(c.text) > max_chars:
+            break
+        out.append(c)
+        total += len(c.text)
+    return out
 
 
 def build_messages(question: str, contexts: list,
@@ -52,12 +83,12 @@ class LLMClient:
 
     def __init__(self, base_url: str, api_key: str, model: str,
                  connect_timeout: float = 10.0, read_timeout: float = 90.0,
-                 max_tokens: int = 1024, max_rounds: int = 3) -> None:
+                 max_tokens: int = 4096, max_rounds: int = 3) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.timeout = httpx.Timeout(connect_timeout, read=read_timeout)
-        self.max_tokens = max_tokens   # 500 对推理型模型不够：思考也吃额度
+        self.max_tokens = max_tokens   # 4096：推理型模型的思考+整合正文都要吃额度
         self.max_rounds = max_rounds   # 续写轮次封顶：初始 1 轮 + 最多 2 次续写
         self._transport = None  # 测试注入 MockTransport
         self._client: httpx.Client | None = None
@@ -114,12 +145,15 @@ class LLMClient:
         return convo + [{"role": "assistant", "content": "".join(parts)},
                         {"role": "user", "content": self.CONTINUE_HINT}]
 
-    def stream(self, messages: list[dict], temperature: float = 0.3,
+    def stream(self, messages: list[dict], temperature: float = 0.2,
                max_tokens: int | None = None,
                deadline_s: float = 240.0) -> Iterator[str]:
         budget = self.max_tokens if max_tokens is None else max_tokens
+        growable = max_tokens is None   # 调用方显式给预算（warmup 探针）时不许增长
         convo = list(messages)
-        for _round in range(self.max_rounds):
+        produced = 0                    # 跨轮累计：最终是否产出过正文
+        for rnd in range(self.max_rounds):
+            last = rnd == self.max_rounds - 1
             payload = {"model": self.model, "messages": convo, "stream": True,
                        "temperature": temperature, "max_tokens": budget}
             parts: list[str] = []
@@ -127,9 +161,10 @@ class LLMClient:
                 finish = yield from self._stream_round(payload, parts, deadline_s)
             except (httpx.HTTPError, KeyError) as exc:
                 if parts:  # 已吐过内容：续写抢救，整发重试会重复
-                    if _round == self.max_rounds - 1:  # 没有下一轮了：如实上报
+                    if last:
                         raise LLMError(f"生成中断（已收到部分内容）: {exc}") from exc
                     convo = self._with_continue(convo, parts)
+                    budget = min(budget * 2, MAX_BUDGET)
                     continue
                 try:       # 未吐字：整发重试恰好一次
                     finish = yield from self._stream_round(payload, parts, deadline_s)
@@ -137,11 +172,27 @@ class LLMClient:
                     if parts:
                         raise LLMError(f"生成中断（已收到部分内容）: {exc2}") from exc2
                     raise LLMError(f"LLM 调用失败（已重试 1 次）: {exc2}") from exc2
-            if finish == "length":  # 预算打满：续写轮补齐
+            produced += len(parts)
+            if not parts:
+                # 零正文：推理型模型把预算全花在思考上（finish=length、content 空，
+                # 实测 deepseek-flash 真实规模 prompt 下 reasoning_tokens=1024 打满），
+                # 续写无从续起——只能加大预算重发原始消息；显式预算/已封顶/无轮次：
+                # 如实上报，让 UI 终结「正在生成…」（旧逻辑在此静默空回＝气泡永久卡死）。
+                if finish == "length" and growable and budget < MAX_BUDGET and not last:
+                    budget = min(budget * 4, MAX_BUDGET)
+                    continue
+                raise LLMError(
+                    f"模型未输出正文（finish={finish or 'none'}, max_tokens={budget}）"
+                    "——多为推理 token 耗尽预算，可调大额度或换非推理模型")
+            if finish == "length":  # 预算打满：续写轮补齐（额度也放宽，思考+正文都要花）
+                if last:
+                    return      # 有内容、轮次用尽：安静收尾（正文已可见）
                 convo = self._with_continue(convo, parts)
+                budget = min(budget * 2, MAX_BUDGET)
                 continue
             return
-        # 轮次用尽：内容已尽力补齐，安静收尾（再抛错只是吓人）
+        if not produced:
+            raise LLMError("模型未输出正文")
 
     def warmup(self) -> None:
         """预建连接池 + 预热服务端首字（供后台线程调用；失败静默）。

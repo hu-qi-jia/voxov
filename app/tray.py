@@ -7,8 +7,10 @@ from core.paths import assets_dir
 
 
 def create_tray(win) -> QSystemTrayIcon:
-    icon_path = assets_dir() / "icon.png"          # PNG：Qt 核心支持，无插件依赖
-    if not icon_path.exists():                     # 开发环境兜底（SVG 可用）
+    icon_path = assets_dir() / "voxov_logo.png"    # voxov 反白字形（透明底，暗色托盘可读）
+    if not icon_path.exists():                     # 兜底：旧资源 → SVG
+        icon_path = assets_dir() / "icon.png"
+    if not icon_path.exists():
         icon_path = assets_dir() / "icon.svg"
     tray = QSystemTrayIcon(QIcon(str(icon_path)) if icon_path.exists() else QIcon(),
                            parent=win)
@@ -23,6 +25,6 @@ def create_tray(win) -> QSystemTrayIcon:
     menu.addAction(settings_act)
     menu.addAction(quit_)
     tray.setContextMenu(menu)
-    tray.setToolTip("Notes")   # 对外中性 tooltip（spec §6.5）
+    tray.setToolTip("voxov")   # 托盘提示（对外名）
     tray.show()
     return tray

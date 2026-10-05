@@ -67,6 +67,16 @@ def test_kb_table_lists_files_and_row_selection(win):
     assert not w.kb_table.editTriggers()
 
 
+def test_kb_table_columns_file_stretches_count_compact(win):
+    """文件名列铺满宽度（不截断成 01-AI…），块数列紧凑贴右。"""
+    from PySide6.QtWidgets import QHeaderView
+    w, _ = win
+    hdr = w.kb_table.horizontalHeader()
+    assert hdr.sectionResizeMode(0) == QHeaderView.Stretch
+    assert hdr.sectionResizeMode(1) == QHeaderView.ResizeToContents
+    assert not hdr.stretchLastSection()
+
+
 def test_kb_empty_state_hint(win):
     w, _ = win
     w.show(); w.switch_page("kb"); w._reload_kb()
@@ -113,7 +123,7 @@ def test_hotkey_flushes_pending_pipeline(win):
 def test_subtitle_question_auto_triggers(win, monkeypatch):
     w, _ = win
     fired = []
-    monkeypatch.setattr(w, "_on_hotkey", lambda: fired.append(1))
+    monkeypatch.setattr(w, "_on_hotkey", lambda *a, **k: fired.append(1))
     w.subtitle_sig.emit("说说 MySQL 索引")
     assert fired == [1]
 
@@ -121,7 +131,7 @@ def test_subtitle_question_auto_triggers(win, monkeypatch):
 def test_subtitle_statement_auto_triggers_when_auto_on(win, monkeypatch):
     w, _ = win
     fired = []
-    monkeypatch.setattr(w, "_on_hotkey", lambda: fired.append(1))
+    monkeypatch.setattr(w, "_on_hotkey", lambda *a, **k: fired.append(1))
     w.subtitle_sig.emit("我们团队主要做 ToB 业务")
     assert fired == [1]                     # 陈述也是实质话轮（路由 spec）
 
@@ -130,7 +140,7 @@ def test_subtitle_no_filtering_all_turns_trigger(win, monkeypatch):
     """用户指示：不过滤招呼语——全部话轮走知识库检索。"""
     w, _ = win
     fired = []
-    monkeypatch.setattr(w, "_on_hotkey", lambda: fired.append(1))
+    monkeypatch.setattr(w, "_on_hotkey", lambda *a, **k: fired.append(1))
     w.subtitle_sig.emit("嗯好的")
     assert fired == [1]
     w.chat_page.auto_switch.setChecked(False)
@@ -299,3 +309,49 @@ def test_hotkey_uses_fresh_turn_and_passes_to_rag(win, qtbot):
     qtbot.waitUntil(lambda: rag.triggered == 1, timeout=3000)
     assert getattr(rag, "pending_turn", "") == "介绍一下你自己"
     assert w._chat_answer is not None
+
+
+def test_parallel_worker_signals_land_on_their_own_bubbles(win, qtbot):
+    """并行信号竞态回归：慢 worker 的信号必须落回自己的气泡，
+    不得写进之后新建的气泡（旧气泡否则永远停在「正在生成…」）。"""
+    import threading
+    from app.ui_chat import AnswerTurn
+
+    release = threading.Event()
+    slow_started = threading.Event()
+
+    class SlowRag:
+        def __init__(self):
+            from core.session import SessionBuffer
+            self.buffer = SessionBuffer()
+        def trigger(self):
+            yield ""
+            slow_started.set()
+            release.wait(3)
+            yield "慢答案"
+
+    class FastRag:
+        def __init__(self):
+            from core.session import SessionBuffer
+            self.buffer = SessionBuffer()
+        def trigger(self):
+            yield "快答案"
+
+    rags = [SlowRag(), FastRag()]
+    w, _ = win
+    w._rag_factory = lambda: rags.pop(0)
+
+    w._on_hotkey()                       # 气泡1 ← 慢 worker
+    qtbot.waitUntil(slow_started.is_set, timeout=3000)
+    w._on_hotkey()                       # 气泡2 ← 快 worker（此刻最新气泡）
+
+    def bubbles():
+        lay = w.chat_page.feed_lay
+        return [lay.itemAt(i).widget() for i in range(lay.count())
+                if isinstance(lay.itemAt(i).widget(), AnswerTurn)]
+
+    qtbot.waitUntil(lambda: len(bubbles()) == 2, timeout=3000)
+    qtbot.waitUntil(lambda: any("快答案" in b._buf for b in bubbles()), timeout=3000)
+    release.set()
+    qtbot.waitUntil(lambda: "慢答案" in bubbles()[0]._buf, timeout=3000)  # 旧代码：永不满足
+    assert "快答案" in bubbles()[1]._buf                                  # 新气泡不被污染

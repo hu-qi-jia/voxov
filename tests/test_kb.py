@@ -138,3 +138,127 @@ def test_hash_ingest_into_onnx_space_refuses(tmp_path):
     import pytest
     with pytest.raises(ValueError, match="嵌入模型未就绪"):
         kb.ingest_file(p)
+
+
+# ---- 标题直配 + 命中扩节（检索为主：简历/文档按问答结构组织，节标题≈面试问题） ----
+RESUME = """# 个人经历
+
+### 自我介绍
+
+面试官您好，我叫测试用户，今年三十岁，本科就读于某大学。
+
+工作经历的话，是从零到一做过多个产品。
+
+#### 跳槽原因
+
+很多方面的原因，未来两年组内规划聚焦在核心项目上。
+
+## 未来计划
+
+短期希望快速融入团队，长期希望负责整条产品线。
+
+# 项目经历
+
+### 促销中心
+
+负责促销活动的配置与数据看板，支撑大促场景。
+"""
+
+@pytest.fixture
+def resume_kb(tmp_path):
+    kb = KnowledgeBase(tmp_path / "kb.db", HashEmbedder(dim=512))
+    kb.ingest_file(_write(tmp_path, "简历.md", RESUME))
+    return kb
+
+def test_match_sections_hits_section_title(resume_kb):
+    """「请你做一个自我介绍」→ 4字滑窗「自我介绍」命中节标题。"""
+    hits = resume_kb.match_sections("请你做一个自我介绍")
+    assert hits == [("简历.md", "个人经历/自我介绍")]
+
+def test_match_sections_prefers_exact_title_and_skips_descendants(resume_kb):
+    """嵌套命中只留最浅节：整节扩出时子树自然带上，不重复计数。"""
+    hits = resume_kb.match_sections("自我介绍，包括跳槽原因")
+    assert ("简历.md", "个人经历/自我介绍") in hits
+    assert ("简历.md", "个人经历/自我介绍/跳槽原因") not in hits
+
+def test_match_sections_latin_token(tmp_path):
+    """西文词项 ≥4 字符也要能直配（大小写不敏感）。"""
+    kb = KnowledgeBase(tmp_path / "kb2.db", HashEmbedder(dim=512))
+    nlp = "# NLP\n\n### Transformer是什么，简单解释一下原理\n\n自注意力机制让每个词都能看到全句。\n"
+    kb.ingest_file(_write(tmp_path, "nlp.md", nlp))
+    assert kb.match_sections("transformer是什么") == [("nlp.md", "NLP/Transformer是什么，简单解释一下原理")]
+    assert kb.match_sections("TRANSFORMER 介绍一下") == [("nlp.md", "NLP/Transformer是什么，简单解释一下原理")]
+
+def test_match_sections_future_plan(resume_kb):
+    hits = resume_kb.match_sections("未来计划是什么")
+    assert hits == [("简历.md", "个人经历/未来计划")]
+
+def test_match_sections_no_match(resume_kb):
+    assert resume_kb.match_sections("今天天气怎么样") == []
+
+def test_section_chunks_includes_subtree_in_order(resume_kb):
+    rows = resume_kb.section_chunks("简历.md", "个人经历/自我介绍")
+    texts = [t for _, _, t in rows]
+    assert any("面试官您好" in t for t in texts)
+    assert any("跳槽原因" in t or "很多方面的原因" in t for t in texts)
+    assert not any("未来计划" in t for t in texts)      # 平级节不带
+    assert not any("促销" in t for t in texts)          # 其它文件节不带
+
+def test_merge_section_texts_dedups_overlap_seam():
+    from core.kb import merge_section_texts
+    prev = "".join(f"第{i}句内容。" for i in range(80))   # 递增编号：尾部串全文唯一
+    nxt = prev[-50:] + "\n\n" + "后续内容" * 20
+    merged = merge_section_texts([("r/a", prev), ("r/a", nxt)])   # 同节：拼缝去重叠
+    assert merged.startswith(prev)
+    assert "后续内容" in merged
+    assert merged.count(prev[-50:]) == 1             # 拼缝只出现一次
+
+def test_merge_section_texts_keeps_disjoint_texts():
+    from core.kb import merge_section_texts
+    merged = merge_section_texts([("r/a", "第一段"), ("r/a", "第二段")])
+    assert merged == "第一段\n\n第二段"
+
+def test_merge_section_texts_restores_subheadings():
+    """跨 #### 子标题补回四级标题行：回答里层级不丢。"""
+    from core.kb import merge_section_texts
+    rows = [("r/自我介绍", "开头介绍。"), ("r/自我介绍/跳槽原因", "很多方面的原因。")]
+    merged = merge_section_texts(rows)
+    assert merged.startswith("开头介绍。")
+    assert "#### 跳槽原因" in merged
+    assert "很多方面的原因。" in merged
+
+def test_merge_section_texts_collapses_aligned_spaces():
+    """源文档用连续空格对齐 → 直出折叠为单空格，行尾空白去除。"""
+    rows = [("r/a", "指标一：TTFT      指标二：成本　　指标三：质量  \n\n下一段。")]
+    from core.kb import merge_section_texts
+    merged = merge_section_texts(rows)
+    assert "      " not in merged and "　　" not in merged
+    assert "指标一：TTFT 指标二：成本 指标三：质量" in merged
+
+
+def test_question_vec_match_threshold_and_descendant_dedup(tmp_path):
+    """问题向量主路：阈值过滤 + 嵌套命中被祖先覆盖；降级模式恒不命中。"""
+    import numpy as np
+    from core.embedder import OnnxEmbedder
+    kb = KnowledgeBase(tmp_path / "kb.db", HashEmbedder(dim=512))
+    doc = ("# QA\n\n### 自我介绍\n\n正文A。\n\n#### 跳槽原因\n\n正文B。\n")
+    kb.ingest_file(_write(tmp_path, "qa.md", doc))
+    # 降级（Hash）模式：问题向量无语义，恒不命中
+    assert kb.match_sections_by_vec("请你做一个自我介绍") == []
+
+    onnx = OnnxEmbedder.__new__(OnnxEmbedder)      # 不触真模型的受控桩
+    onnx.dim = 512
+    onnx.id = "onnx:stub"
+    e0 = np.zeros(512, dtype=np.float32); e0[0] = 1.0    # 自我介绍
+    e1 = np.zeros(512, dtype=np.float32); e1[1] = 1.0    # 跳槽原因
+    def enc(texts):
+        return [e0 if "自我介绍" in t else e1 for t in texts]
+    onnx.encode = enc
+    onnx.encode_query = lambda q: (e0 + e1) / np.linalg.norm(e0 + e1)   # 两节都过阈
+    kb.embedder = onnx
+    kb.rebuild_question_vectors()
+    hits = kb.match_sections_by_vec("请你做一个自我介绍，顺便讲讲跳槽原因")
+    assert [hp for _, hp, _ in hits] == ["QA/自我介绍"]   # 后代节被祖先覆盖
+
+    onnx.encode_query = lambda q: [0.0] * 512                          # 正交：全不过阈
+    assert kb.match_sections_by_vec("请你做一个自我介绍") == []

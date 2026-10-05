@@ -2,6 +2,7 @@
 # _apply_settings/rebind_hotkeys 已恢复于主窗（审查前修正轮），锚点测试在
 # tests/test_main_window.py；热键保存校验由 SettingsPage 承担（tests/test_settings_page.py）；
 # 彩排（I7）整体移除。
+import json
 import time
 
 import pytest
@@ -151,3 +152,35 @@ def test_generic_answer_notice_shown_in_chat(win, qtbot):
     w._on_hotkey()
     qtbot.waitUntil(lambda: w._chat_answer is not None
                     and "开放题" in w._chat_answer.note.text(), timeout=3000)
+
+
+def test_worker_zero_content_stream_surfaces_failed(qtbot):
+    """零内容流闭环：generator 抛 LLMError → worker 必发 failed（绝不静默 done，
+    否则气泡占位「正在生成…」无人替换——2026-10-05 卡死事故的 worker 级契约）。"""
+    import httpx
+    from app.workers import GenerateWorker
+    from core.generator import LLMClient
+
+    class _R:
+        last_question = "先做一下自我介绍。"
+        last_notice = "基于知识库 · 已整理 5 段资料"
+        def __init__(self):
+            self.llm = LLMClient("https://api.example.com/v1", "sk-test", "m")
+            self.llm._transport = httpx.MockTransport(
+                lambda req: httpx.Response(200, text=(
+                    "data: " + json.dumps(
+                        {"choices": [{"delta": {}, "finish_reason": "length"}]})
+                    + "\n\ndata: [DONE]\n\n")))
+        def trigger(self):
+            yield from self.llm.stream([{"role": "user", "content": "x"}])
+
+    wk = GenerateWorker(_R())
+    got = {"failed": [], "done": False, "chunk": []}
+    wk.failed.connect(got["failed"].append)
+    wk.chunk.connect(got["chunk"].append)
+    wk.done.connect(lambda: got.__setitem__("done", True))
+    wk.start()
+    assert wk.wait(5000)
+    qtbot.waitUntil(lambda: bool(got["failed"]), timeout=3000)
+    assert got["chunk"] == []            # 零增量
+    assert "未输出正文" in got["failed"][0]
