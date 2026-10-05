@@ -1,9 +1,15 @@
 # core/generator.py
 import json
+import threading
 import time
 from typing import Iterator
 
 import httpx
+
+# 连接池按 (base_url, api_key, model) 共享：并行生成各持 LLMClient 实例，
+# 但底层 TLS 连接池共享——启动预热/上一轮回答的连接对后续生成依然有效。
+_CLIENT_POOL: dict[tuple, httpx.Client] = {}
+_POOL_LOCK = threading.Lock()
 
 SYSTEM_PROMPT = ("你是面试实时辅助。输出口语化中文，像求职者当场回答，可直接照读，"
     "禁止书面腔和套话开场。分点输出，每点一句完整的话，关键词加粗。按重要性排序，"
@@ -71,9 +77,14 @@ class LLMClient:
         self._client: httpx.Client | None = None
 
     def _http(self) -> httpx.Client:
-        if self._client is None:
-            self._client = httpx.Client(transport=self._transport, timeout=self.timeout)
-        return self._client
+        key = (self.base_url, self.api_key, self.model,
+               id(self._transport) if self._transport is not None else None)
+        with _POOL_LOCK:
+            client = _CLIENT_POOL.get(key)
+            if client is None:
+                client = httpx.Client(transport=self._transport, timeout=self.timeout)
+                _CLIENT_POOL[key] = client
+        return client
 
     def _stream_round(self, payload: dict, parts: list[str],
                       deadline_s: float) -> Iterator[str]:

@@ -159,3 +159,37 @@ def test_space_mismatch_disables_vector_distance():
     _feed(svc, "介绍一下你的项目经历")
     "".join(svc.trigger())
     assert svc.last_notice == "基于知识库 · 1 条资料"    # FTS 越过兜底仍可用
+
+
+# --- 预设问答直出：余弦≥0.7（L2≤0.775）→ 跳过 LLM 直接展示库内答案 ---
+def test_preset_qa_direct_hit_skips_llm():
+    ctx = Retrieved(chunk_id=3, text="问：介绍下你的项目经历\n答：主导过日千万级缓存重构",
+                    heading_path="预设问答", source_file="qa.md", score=-1)
+    llm = FakeLLM()
+    svc = RagService(FakeRetriever([ctx], reliable=True, top=0.6), llm)
+    _feed(svc, "介绍一下你的项目经历")
+    out = "".join(svc.trigger())
+    assert out == "问：介绍下你的项目经历\n答：主导过日千万级缓存重构"
+    assert llm.calls == []                              # LLM 完全不介入
+    assert svc.last_notice.startswith("命中预设问答 · 相似度 0.")
+
+def test_below_preset_threshold_still_uses_llm():
+    ctx = Retrieved(chunk_id=3, text="相关但不是预设答案的内容", heading_path="h",
+                    source_file="s.md", score=-1)
+    llm = FakeLLM()
+    svc = RagService(FakeRetriever([ctx], reliable=True, top=0.85), llm)  # 0.775<d≤0.92
+    _feed(svc, "RDB持久化怎么做的")
+    "".join(svc.trigger())
+    assert len(llm.calls) == 1                          # 正常 refs 走 LLM
+    assert svc.last_notice == "基于知识库 · 1 条资料"
+
+def test_preset_direct_hit_disabled_when_space_mismatch():
+    ctx = Retrieved(chunk_id=3, text="问：项目经历\n答：略", heading_path="h",
+                    source_file="s.md", score=-1)
+    llm = FakeLLM()
+    r = FakeRetriever([ctx], reliable=True, top=0.5)
+    r.space_mismatch = True                             # 距离不可信：不允许直出
+    svc = RagService(r, llm)
+    _feed(svc, "介绍一下你的项目经历")
+    "".join(svc.trigger())
+    assert len(llm.calls) == 1                          # 回落正常生成

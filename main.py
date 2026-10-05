@@ -44,7 +44,19 @@ def build_app():
         pass
     if cfg.llm_base_url and cfg.llm_api_key:   # 后台预热 LLM 连接，首答不付冷启动
         import threading
-        threading.Thread(target=rag.llm.warmup, daemon=True, name="llm-warmup").start()
+        import time as _time
+
+        def _warmup_loop():
+            """连接池按 (url,key,model) 共享——周期预热让任何时刻的首答都拿到热连接
+            （启动时的一次性预热撑不过面试前几小时的空窗）。"""
+            while True:
+                try:
+                    rag.llm.warmup()
+                except Exception:
+                    pass
+                _time.sleep(240)
+
+        threading.Thread(target=_warmup_loop, daemon=True, name="llm-warmup").start()
     return cfg, kb, make_rag, recorder
 
 

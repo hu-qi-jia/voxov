@@ -27,6 +27,8 @@ class RagService:
     REF_DIST_MAX = 0.92   # 实测校准（2026-10-05，bge-small-zh + 用户真实库 245 块）：
                           # 相关问法 top=0.76-0.87，无关问题 ~1.00；0.92 两侧有余量。
                           # 调参入口在此；L2（单位向量）⇔ cos≥约0.58
+    PRESET_DIST_MAX = 0.775   # 预设问答直出：L2≤0.775 ⇔ 余弦≥0.70。命中即跳过 LLM，
+                              # 直接展示库内答案（预设问答库场景：零时延、零幻觉）
 
     def __init__(self, retriever: Retriever, llm: LLMClient,
                  recorder: SessionRecorder | None = None) -> None:
@@ -50,14 +52,27 @@ class RagService:
             return
         self.last_turn_class = classify_turn(turn)
         contexts: list = []
-        if self.last_turn_class == "statement":
-            use_refs = False                      # 陈述不检索（spec §5.2）
-        else:
+        use_refs = False
+        reliable = False
+        top = None
+        if self.last_turn_class != "statement":
             contexts = self.retriever.retrieve(turn, k=5)
             reliable = (getattr(self.retriever, "distances_reliable", False)
                         and not getattr(self.retriever, "space_mismatch", False))
+            top = getattr(self.retriever, "last_top_distance", None)
+            # ---- 预设问答直出：相似度足够高 → 跳过 LLM（零时延、零幻觉） ----
+            if reliable and top is not None and top <= self.PRESET_DIST_MAX and contexts:
+                answer = contexts[0].text
+                cos = 1 - top * top / 2
+                self.last_notice = f"命中预设问答 · 相似度 {cos:.2f}"
+                self.last_had_refs = True
+                self.history.append((turn, answer))
+                self.history = self.history[-5:]
+                if self.recorder:
+                    self.recorder.add_qa(turn, contexts[:1], answer)
+                yield answer
+                return
             if reliable:
-                top = getattr(self.retriever, "last_top_distance", None)
                 use_refs = bool(contexts) and (
                     (top is not None and top <= self.REF_DIST_MAX)
                     or _fts_exact_hit(turn, contexts))
