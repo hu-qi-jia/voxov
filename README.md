@@ -57,10 +57,10 @@ python main.py
 
 ```bash
 pip install pyinstaller
-pyinstaller interview-assistant.spec
+python scripts/build_dist.py     # 自动备份/回填 dist 里的 data/（直接跑 pyinstaller 会清掉用户数据）
 ```
 
-产物在 `dist/notes-viewer/`，整目录拷走即用；`models/`、`data/` 放在同目录。对外进程名为中性的 `notes-viewer`，窗口标题为 `voxov`。
+产物在 `dist/notes-viewer/`，整目录拷走即用；`models/`、`data/` 放在同目录。对外进程名为中性的 `notes-viewer`，窗口标题为 `voxov`。再次启动已运行的实例会把它唤到前台（含急隐藏态）；设置页可一键创建桌面快捷方式。
 
 ## 开发
 
