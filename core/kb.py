@@ -42,7 +42,7 @@ class KnowledgeBase:
         if not chunks:
             raise ValueError(f"无可切分内容: {md_path}")
         self._ensure_space()
-        vecs = self.embedder.encode([c.text for c in chunks])
+        vecs = self.embedder.encode([self._embed_input(c) for c in chunks])
         with self._lock:
             with self.con:
                 self.delete_file(md_path.name)
@@ -104,6 +104,12 @@ class KnowledgeBase:
             return [(int(r[0]), r[4], r[2], r[1]) for r in self.con.execute(
                 f"SELECT id, source_file, heading_path, seq, text FROM chunks WHERE id IN ({ph}) ORDER BY id", ids)]
 
+    @staticmethod
+    def _embed_input(chunk) -> str:
+        """入库向量 = 标题锚 + 正文：标题是主题语义锚（如「自我介绍」），
+        长正文被 mean-pooling 稀释后短问题仍能对准。"""
+        return f"{chunk.heading_path}\n{chunk.text}"
+
     # ---- 嵌入空间指纹：库内向量必须与查询向量同空间（事故：降级期入库、修复后查询） ----
     def embedder_id(self) -> str | None:
         with self._lock:
@@ -129,12 +135,14 @@ class KnowledgeBase:
     def reembed(self, embedder) -> int:
         """用指定嵌入模型重嵌全部 chunk（文本在库，无需原始文件）。"""
         with self._lock:
-            rows = self.con.execute("SELECT id, text FROM chunks").fetchall()
+            rows = self.con.execute("SELECT id, heading_path, text FROM chunks").fetchall()
             self.con.execute("DELETE FROM vec_chunks")
             for i in range(0, len(rows), 64):
                 batch = rows[i:i + 64]
-                vecs = embedder.encode([t for _, t in batch])
-                for (rid, _t), v in zip(batch, vecs):
+                vecs = embedder.encode([
+                    self._embed_input(type("C", (), {"heading_path": h, "text": t})())
+                    for _, h, t in batch])
+                for (rid, _h, _t), v in zip(batch, vecs):
                     self.con.execute(
                         "INSERT INTO vec_chunks(chunk_id, embedding) VALUES(?,?)",
                         (rid, serialize_float32(v)))

@@ -109,7 +109,8 @@ _REF = Retrieved(chunk_id=1, text="RDB 定时快照 AOF 追加日志", heading_p
                  source_file="redis.md", score=-1)
 
 def test_reliable_distance_within_threshold_uses_refs():
-    svc = RagService(FakeRetriever([_REF], reliable=True, top=0.9), FakeLLM())
+    # 0.92 < d ≤ 0.95：预设带之外、refs 带之内 → 正常走 LLM
+    svc = RagService(FakeRetriever([_REF], reliable=True, top=0.93), FakeLLM())
     _feed(svc, "RDB持久化怎么做的")
     "".join(svc.trigger())
     assert svc.last_notice == "基于知识库 · 1 条资料"
@@ -173,15 +174,12 @@ def test_preset_qa_direct_hit_skips_llm():
     assert llm.calls == []                              # LLM 完全不介入
     assert svc.last_notice.startswith("命中预设问答 · 相似度 0.")
 
-def test_below_preset_threshold_still_uses_llm():
-    ctx = Retrieved(chunk_id=3, text="相关但不是预设答案的内容", heading_path="h",
-                    source_file="s.md", score=-1)
-    llm = FakeLLM()
-    svc = RagService(FakeRetriever([ctx], reliable=True, top=0.85), llm)  # 0.775<d≤0.92
+def test_above_refs_band_falls_to_generic():
+    svc = RagService(FakeRetriever([_REF], reliable=True, top=1.05), FakeLLM())
     _feed(svc, "RDB持久化怎么做的")
     "".join(svc.trigger())
-    assert len(llm.calls) == 1                          # 正常 refs 走 LLM
-    assert svc.last_notice == "基于知识库 · 1 条资料"
+    assert svc.last_notice == "通用回答（知识库无命中）"
+    assert svc.last_had_refs is False
 
 def test_preset_direct_hit_disabled_when_space_mismatch():
     ctx = Retrieved(chunk_id=3, text="问：项目经历\n答：略", heading_path="h",

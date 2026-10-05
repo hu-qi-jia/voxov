@@ -24,11 +24,12 @@ def _fts_exact_hit(query: str, contexts: list) -> bool:
 class RagService:
     """热键/自动触发的完整编排：提取话轮 → 分类 → 检索路由 → 流式生成 → 记录。"""
 
-    REF_DIST_MAX = 0.92   # 实测校准（2026-10-05，bge-small-zh + 用户真实库 245 块）：
-                          # 相关问法 top=0.76-0.87，无关问题 ~1.00；0.92 两侧有余量。
-                          # 调参入口在此；L2（单位向量）⇔ cos≥约0.58
-    PRESET_DIST_MAX = 0.775   # 预设问答直出：L2≤0.775 ⇔ 余弦≥0.70。命中即跳过 LLM，
-                              # 直接展示库内答案（预设问答库场景：零时延、零幻觉）
+    REF_DIST_MAX = 0.95   # 实测校准 v2（2026-10-05，标题锚定嵌入 + 用户真实库 308 块）：
+                          # 相关问法 top=0.778-0.917，无关问题 ~1.013；0.95 两侧有余量。
+                          # 调参入口在此；L2（单位向量）⇔ cos≥约0.55
+    PRESET_DIST_MAX = 0.92   # 预设问答直出带（≤REF_DIST_MAX）：命中即跳过 LLM 直接
+                             # 展示库内答案。用户场景=整库预设问答，相关即直出；
+                             # 若未来混入参考资料类文档，请下调此值或用「问：」前缀约定
 
     def __init__(self, retriever: Retriever, llm: LLMClient,
                  recorder: SessionRecorder | None = None) -> None:

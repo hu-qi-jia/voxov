@@ -55,7 +55,7 @@ class OnnxEmbedder:
         self._sess = ort.InferenceSession(
             str(model_dir / "model.onnx"), providers=["CPUExecutionProvider"])
         self.dim = 512
-        self.id = "onnx:bge-small-zh-v1.5:512"
+        self.id = "onnx:bge-small-zh-v1.5:512:h1"  # v2：标题锚定嵌入（heading+text）
 
     def encode(self, texts: list[str]) -> list[list[float]]:
         if not texts:
