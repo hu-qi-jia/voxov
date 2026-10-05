@@ -79,3 +79,12 @@ def patch_sentencepiece_unicode() -> None:
         spp._notes_unicode_patch = True
     except (AttributeError, TypeError):
         pass
+
+
+def assets_dir() -> Path:
+    """资源目录（assets/）：开发时=仓库根；打包后=PyInstaller 解包目录
+    （onedir 下为 <exe目录>/_internal）。tray/图标等所有资源查找必须走这里。"""
+    import sys
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS) / "assets"     # PyInstaller 运行时解包目录
+    return Path(__file__).resolve().parents[1] / "assets"

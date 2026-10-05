@@ -1,5 +1,7 @@
 # app/main_window.py —— 主窗口 v4：retro terminal 壳。
 # 顶栏文本 tab + 底部状态行；设置/下载并入设置页；彩排已移除。
+import os
+import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -156,8 +158,13 @@ class MainWindow(QMainWindow):
 
     def _refresh_status_info(self) -> None:
         n = len(self._kb_factory().list_files())
+        build = ""
+        if getattr(sys, "frozen", False):
+            import datetime
+            mt = datetime.datetime.fromtimestamp(os.path.getmtime(sys.executable))
+            build = f" · build {mt:%m-%d %H:%M}"
         self.status_info.setText(
-            f"{self._model_text} · kb: {n} 文件 · hotkey: {self.cfg.hotkey}")
+            f"{self._model_text} · kb: {n} 文件 · hotkey: {self.cfg.hotkey}{build}")
 
     def _build_kb_page(self) -> QWidget:
         from PySide6.QtWidgets import QFrame

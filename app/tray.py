@@ -3,10 +3,13 @@ from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from core.config import app_root
+from core.paths import assets_dir
 
 
 def create_tray(win) -> QSystemTrayIcon:
-    icon_path = app_root() / "assets" / "icon.svg"  # 相对应用根解析，不依赖 CWD
+    icon_path = assets_dir() / "icon.png"          # PNG：Qt 核心支持，无插件依赖
+    if not icon_path.exists():                     # 开发环境兜底（SVG 可用）
+        icon_path = assets_dir() / "icon.svg"
     tray = QSystemTrayIcon(QIcon(str(icon_path)) if icon_path.exists() else QIcon(),
                            parent=win)
     menu = QMenu()

@@ -6,7 +6,9 @@ from PySide6.QtCore import QByteArray, Qt
 from PySide6.QtGui import QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 
-ICON_DIR = Path(__file__).resolve().parents[1] / "assets" / "icons"
+from core.paths import assets_dir
+
+ICON_DIR = assets_dir() / "icons"
 
 
 @lru_cache(maxsize=None)
