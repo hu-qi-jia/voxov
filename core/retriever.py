@@ -37,6 +37,7 @@ class Retriever:
     def retrieve(self, query: str, k: int = 5) -> list[Retrieved]:
         query = query.strip()
         self.last_top_distance = None
+        self.last_distances: dict[int, float] = {}
         self.space_mismatch = self.kb.space_mismatch(self.embedder)
         if not query:
             return []
@@ -44,6 +45,7 @@ class Retriever:
         vec_hits = [] if self.space_mismatch else self.kb.vector_search(
             self.embedder.encode_query(query), k=k)
         if vec_hits:
+            self.last_distances = {cid: d for cid, d in vec_hits}
             self.last_top_distance = min(d for _, d in vec_hits)
         rankings = [
             [cid for cid, _ in vec_hits],

@@ -24,11 +24,18 @@ STATEMENT_PROMPT = ("你是面试实时辅助。面试官正在做陈述或铺�
     "给出求职者此刻最该说的自然回应：一两句话即可，口语化、可直接照读，"
     "顺势带出自己的相关经验或优势。不要分点，不要超过 80 字。")
 
+PRESET_PROMPT = ("你在面试实时辅助。下面给你的是求职者「自己的真实素材」，全部来自"
+    "他本人的知识库。请只依据这些素材，整理合并成一段连贯、口语化、可直接照读的"
+    "回答来回应问题。可以调整顺序与措辞使表达通顺，但绝对禁止编造素材之外的任何"
+    "事实、数字或经历。不要分点，篇幅控制在一分钟内能说完。")
+
 
 def build_messages(question: str, contexts: list, history: list[tuple[str, str]],
                    mode: str = "refs") -> list[dict]:
     if mode == "statement":
         system = STATEMENT_PROMPT
+    elif mode == "preset":
+        system = PRESET_PROMPT
     elif mode == "generic":
         system = GENERIC_PROMPT
     else:
@@ -39,6 +46,10 @@ def build_messages(question: str, contexts: list, history: list[tuple[str, str]]
             f"[资料{i+1}] {c.source_file} › {c.heading_path}\n{c.text}"
             for i, c in enumerate(contexts))
         parts.append(f"参考资料：\n{refs}")
+    if mode == "preset" and contexts:
+        mats = "\n\n".join(
+            f"[素材{i+1}]\n{c.text}" for i, c in enumerate(contexts))
+        parts.append(f"你的真实素材：\n{mats}")
     for q, a in history[-2:]:
         parts.append(f"之前的问题：{q}\n之前的回答：{a}")
     label = "当前面试官发言" if mode == "statement" else "当前问题"

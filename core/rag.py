@@ -56,33 +56,36 @@ class RagService:
         use_refs = False
         reliable = False
         top = None
+        mats: list = []
+        preset = False
         if self.last_turn_class != "statement":
             contexts = self.retriever.retrieve(turn, k=5)
             reliable = (getattr(self.retriever, "distances_reliable", False)
                         and not getattr(self.retriever, "space_mismatch", False))
             top = getattr(self.retriever, "last_top_distance", None)
-            # ---- 预设问答直出：相似度足够高 → 跳过 LLM（零时延、零幻觉） ----
+            dists = getattr(self.retriever, "last_distances", {})
+            # ---- 预设问答：top 落在直出带 → 收齐带内素材，交 LLM 整理合并 ----
+            #（单 chunk 直出会丢长答案的其余段落；LLM 只做整理，禁止编造）
             if reliable and top is not None and top <= self.PRESET_DIST_MAX and contexts:
-                answer = contexts[0].text
-                cos = 1 - top * top / 2
-                self.last_notice = f"命中预设问答 · 相似度 {cos:.2f}"
-                self.last_had_refs = True
-                self.history.append((turn, answer))
-                self.history = self.history[-5:]
-                if self.recorder:
-                    self.recorder.add_qa(turn, contexts[:1], answer)
-                yield answer
-                return
-            if reliable:
+                preset = True
+                mats = ([c for c in contexts
+                         if dists.get(c.chunk_id, 9.9) <= self.PRESET_DIST_MAX]
+                        or contexts[:1])
+            elif reliable:
                 use_refs = bool(contexts) and (
                     (top is not None and top <= self.REF_DIST_MAX)
                     or _fts_exact_hit(turn, contexts))
             else:
                 use_refs = bool(contexts)         # Hash/空间错配：FTS 兜底，有结果即注入
-        self.last_had_refs = use_refs
+        self.last_had_refs = use_refs or preset
         mode = ("statement" if self.last_turn_class == "statement"
+                else "preset" if preset
                 else "refs" if use_refs else "generic")
-        if use_refs:
+        if preset:
+            cos = 1 - top * top / 2
+            self.last_notice = (f"命中预设问答 · 已整理 {len(mats)} 段素材 · "
+                                f"相似度 {cos:.2f}")
+        elif use_refs:
             self.last_notice = f"基于知识库 · {len(contexts)} 条资料"
         elif self.last_turn_class == "open":
             self.last_notice = "开放题 · 未用资料"
@@ -90,8 +93,8 @@ class RagService:
             self.last_notice = "通用回答（知识库无命中）"
         else:
             self.last_notice = "接话 · 未用资料"
-        messages = build_messages(turn, contexts if use_refs else [],
-                                  self.history, mode=mode)
+        materials = mats if preset else (contexts if use_refs else [])
+        messages = build_messages(turn, materials, self.history, mode=mode)
         parts: list[str] = []
         for delta in self.llm.stream(messages):
             parts.append(delta)
@@ -100,4 +103,4 @@ class RagService:
         self.history.append((turn, answer))
         self.history = self.history[-5:]
         if self.recorder:
-            self.recorder.add_qa(turn, contexts if use_refs else [], answer)
+            self.recorder.add_qa(turn, materials, answer)

@@ -102,6 +102,8 @@ class FakeRetriever:
         self._c = contexts
         self.distances_reliable = reliable
         self.last_top_distance = top
+        self.last_distances = {c.chunk_id: top for c in contexts}
+        self.space_mismatch = False
     def retrieve(self, q, k=5):
         return self._c
 
@@ -167,12 +169,18 @@ def test_preset_qa_direct_hit_skips_llm():
     ctx = Retrieved(chunk_id=3, text="问：介绍下你的项目经历\n答：主导过日千万级缓存重构",
                     heading_path="预设问答", source_file="qa.md", score=-1)
     llm = FakeLLM()
-    svc = RagService(FakeRetriever([ctx], reliable=True, top=0.6), llm)
+    r = FakeRetriever([ctx], reliable=True, top=0.6)
+    r.last_distances = {ctx.chunk_id: 0.6}
+    svc = RagService(r, llm)
     _feed(svc, "介绍一下你的项目经历")
     out = "".join(svc.trigger())
-    assert out == "问：介绍下你的项目经历\n答：主导过日千万级缓存重构"
-    assert llm.calls == []                              # LLM 完全不介入
-    assert svc.last_notice.startswith("命中预设问答 · 相似度 0.")
+    assert len(llm.calls) == 1                          # LLM 介入，但只做整理
+    sys_msg = llm.calls[0][0]["content"]
+    user_msg = llm.calls[0][1]["content"]
+    assert "真实素材" in sys_msg and "禁止编造" in sys_msg
+    assert "介绍下你的项目经历" in user_msg             # 素材原文进 prompt
+    assert svc.last_notice.startswith("命中预设问答 · 已整理 1 段")
+    assert isinstance(out, str) and out
 
 def test_above_refs_band_falls_to_generic():
     svc = RagService(FakeRetriever([_REF], reliable=True, top=1.05), FakeLLM())
