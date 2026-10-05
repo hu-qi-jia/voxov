@@ -1,5 +1,6 @@
 # core/generator.py
 import json
+import time
 from typing import Iterator
 
 import httpx
@@ -74,15 +75,22 @@ class LLMClient:
             self._client = httpx.Client(transport=self._transport, timeout=self.timeout)
         return self._client
 
-    def _stream_round(self, payload: dict, parts: list[str]) -> Iterator[str]:
-        """单轮流：增量透传并收进 parts；return finish_reason（''=未收到）。"""
+    def _stream_round(self, payload: dict, parts: list[str],
+                      deadline_s: float) -> Iterator[str]:
+        """单轮流：增量透传并收进 parts；return finish_reason（''=未收到）。
+        总时长看门狗：部分服务端定期发 keepalive 帧骗过逐字节读超时——
+        按墙钟判死，防止「正在生成…」永久挂起。"""
         headers = {"Authorization": f"Bearer {self.api_key}"}
         client = self._http()
         finish = ""
+        t0 = time.monotonic()
         with client.stream("POST", f"{self.base_url}/chat/completions",
                            json=payload, headers=headers) as resp:
             resp.raise_for_status()
             for line in resp.iter_lines():
+                if time.monotonic() - t0 > deadline_s:
+                    raise httpx.ReadError(
+                        f"生成超时（{deadline_s:.0f}s 未收尾，已收 {len(parts)} 段）")
                 if not line.startswith("data:"):
                     continue
                 data = line[len("data:"):].strip()
@@ -110,7 +118,8 @@ class LLMClient:
                         {"role": "user", "content": self.CONTINUE_HINT}]
 
     def stream(self, messages: list[dict], temperature: float = 0.3,
-               max_tokens: int | None = None) -> Iterator[str]:
+               max_tokens: int | None = None,
+               deadline_s: float = 240.0) -> Iterator[str]:
         budget = self.max_tokens if max_tokens is None else max_tokens
         convo = list(messages)
         for _round in range(self.max_rounds):
@@ -118,7 +127,7 @@ class LLMClient:
                        "temperature": temperature, "max_tokens": budget}
             parts: list[str] = []
             try:
-                finish = yield from self._stream_round(payload, parts)
+                finish = yield from self._stream_round(payload, parts, deadline_s)
             except (httpx.HTTPError, KeyError) as exc:
                 if parts:  # 已吐过内容：续写抢救，整发重试会重复
                     if _round == self.max_rounds - 1:  # 没有下一轮了：如实上报
@@ -126,7 +135,7 @@ class LLMClient:
                     convo = self._with_continue(convo, parts)
                     continue
                 try:       # 未吐字：整发重试恰好一次
-                    finish = yield from self._stream_round(payload, parts)
+                    finish = yield from self._stream_round(payload, parts, deadline_s)
                 except (httpx.HTTPError, KeyError) as exc2:
                     if parts:
                         raise LLMError(f"生成中断（已收到部分内容）: {exc2}") from exc2

@@ -27,6 +27,9 @@ class MainWindow(QMainWindow):
         self._recorder = None
         self._chat_answer = None
         self._last_utterance = ""
+        self._workers: set = set()          # 并行生成：每个话轮独立 worker
+        self._last_history: list = []       # 最近完成的问答上下文（供后续生成继承）
+        self._listen_buffer = None          # 监听转写缓冲（启动监听时创建）
         self.subtitle_sig.connect(self._on_subtitle)
         self.audio_error_sig.connect(self._on_audio_error)
         self._worker = None
@@ -112,11 +115,8 @@ class MainWindow(QMainWindow):
         self.switch_page("settings")
 
     def _apply_settings(self) -> None:
-        """审查 I3：设置保存后立即生效——重建 LLM 客户端、重绑热键。"""
-        from core.generator import LLMClient
-        if self._rag is not None:
-            self._rag.llm = LLMClient(self.cfg.llm_base_url,
-                                      self.cfg.llm_api_key, self.cfg.llm_model)
+        """审查 I3：设置保存后立即生效。并行架构下每次生成都按当前 cfg 新建
+        LLMClient（工厂闭包读 cfg），此处只需重绑热键 + 刷新状态行。"""
         self.rebind_hotkeys()
         self._refresh_status_info()
 
@@ -299,8 +299,9 @@ class MainWindow(QMainWindow):
             self._pipeline.stop()
         if self.bridge is not None:
             self.bridge.stop()
-        if self._worker is not None and self._worker.isRunning():
-            self._worker.wait(2000)
+        for wk in list(self._workers):
+            if wk.isRunning():
+                wk.wait(2000)
         if self._load_worker is not None and self._load_worker.isRunning():
             self._load_worker.wait(2000)
         if self._dl_worker is not None and self._dl_worker.isRunning():
@@ -330,16 +331,16 @@ class MainWindow(QMainWindow):
             self.open_settings()
             self._start_download()
             return
-        self._rag = self._rag or self._rag_factory()
-        rag = self._rag
+        from core.session import SessionBuffer
+        self._listen_buffer = SessionBuffer()   # 转写缓冲归窗口：并行生成共享读取
 
         def build(tr):
             from core.capture import LiveAudioSource
             from core.pipeline import AudioPipeline
             from core.vad import make_silero_vad
             return AudioPipeline(LiveAudioSource(device_name=self.cfg.audio_device or None),
-                                 tr, rag.buffer,
-                                 recorder=getattr(rag, "recorder", self._recorder),
+                                 tr, self._listen_buffer,
+                                 recorder=self._recorder,
                                  vad=make_silero_vad(self.cfg.models_dir))
 
         self._load_and_start(build)
@@ -382,29 +383,34 @@ class MainWindow(QMainWindow):
         self.start_btn.setEnabled(True)
         self.set_status(f"音频异常，已停止监听：{m}", "error")
 
-    # ---- 热键 → 生成 ----
+    # ---- 热键 → 生成（并行）：每次触发独立 RagService + 独立回答气泡 ----
     def _on_hotkey(self) -> None:
         from app.workers import GenerateWorker
-        if self._worker is not None and self._worker.isRunning():
-            return
         if self._pipeline is not None:
             self._pipeline.flush_pending()
-        if self._rag is None:
-            self._rag = self._rag_factory()
+        rag = self._rag_factory()
+        rag.buffer = self._listen_buffer        # 与监听管线共用转写缓冲
+        rag.history = list(self._last_history)  # 继承已完成问答的上下文
         self._chat_answer = self.chat_page.begin_answer()
-        self._worker = GenerateWorker(self._rag)
-        self._worker.question.connect(self._on_question)
-        self._worker.chunk.connect(self._on_chunk)
-        self._worker.notice.connect(self._on_notice)
-        self._worker.failed.connect(self._on_generate_failed)
-        self._worker.start()
+        worker = GenerateWorker(rag)
+        worker.question.connect(self._on_question)
+        worker.chunk.connect(self._on_chunk)
+        worker.notice.connect(self._on_notice)
+        worker.failed.connect(self._on_generate_failed)
+        worker.done.connect(lambda r=rag: self._remember_history(r))
+        worker.finished.connect(lambda w=worker: self._workers.discard(w))
+        self._workers.add(worker)
+        self._worker = worker                   # 兼容别名：指向最新一个
+        worker.start()
+
+    def _remember_history(self, rag) -> None:
+        self._last_history = list(getattr(rag, "history", []))
 
     def _on_subtitle(self, t: str) -> None:
         self.chat_page.add_interviewer(t)
         self._last_utterance = t
         from core.heuristics import classify_turn
-        worker_busy = self._worker is not None and self._worker.isRunning()
-        if (self.chat_page.auto_switch.isChecked() and not worker_busy
+        if (self.chat_page.auto_switch.isChecked()
                 and classify_turn(t) != "chatter"):
             self._on_hotkey()
 
@@ -420,7 +426,7 @@ class MainWindow(QMainWindow):
     def _on_generate_failed(self, m: str) -> None:
         self.set_status(f"生成失败：{m}", "error")
         if self._chat_answer is not None:
-            self._chat_answer.mark_interrupted()
+            self._chat_answer.fail(m)
 
     def _on_notice(self, m: str) -> None:
         if self._chat_answer is not None:

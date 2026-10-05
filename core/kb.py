@@ -31,6 +31,7 @@ class KnowledgeBase:
         CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks
           USING vec0(chunk_id INTEGER PRIMARY KEY, embedding float[{embedder.dim}]);
         CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(text, tokenize='trigram');
+        CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
         """)
 
     def ingest_file(self, md_path: Path) -> int:
@@ -40,6 +41,7 @@ class KnowledgeBase:
         chunks = split_markdown(text, md_path.name)
         if not chunks:
             raise ValueError(f"无可切分内容: {md_path}")
+        self._ensure_space()
         vecs = self.embedder.encode([c.text for c in chunks])
         with self._lock:
             with self.con:
@@ -101,3 +103,56 @@ class KnowledgeBase:
         with self._lock:
             return [(int(r[0]), r[4], r[2], r[1]) for r in self.con.execute(
                 f"SELECT id, source_file, heading_path, seq, text FROM chunks WHERE id IN ({ph}) ORDER BY id", ids)]
+
+    # ---- 嵌入空间指纹：库内向量必须与查询向量同空间（事故：降级期入库、修复后查询） ----
+    def embedder_id(self) -> str | None:
+        with self._lock:
+            row = self.con.execute(
+                "SELECT value FROM meta WHERE key='embedder_id'").fetchone()
+        return row[0] if row else None
+
+    def set_embedder_id(self, value: str) -> None:
+        with self._lock:
+            with self.con:
+                self.con.execute(
+                    "INSERT INTO meta(key, value) VALUES('embedder_id', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (value,))
+
+    def space_mismatch(self, embedder) -> bool:
+        stored = self.embedder_id()
+        return stored is not None and stored != embedder.id
+
+    def chunk_count(self) -> int:
+        with self._lock:
+            return int(self.con.execute("SELECT COUNT(*) FROM chunks").fetchone()[0])
+
+    def reembed(self, embedder) -> int:
+        """用指定嵌入模型重嵌全部 chunk（文本在库，无需原始文件）。"""
+        with self._lock:
+            rows = self.con.execute("SELECT id, text FROM chunks").fetchall()
+            self.con.execute("DELETE FROM vec_chunks")
+            for i in range(0, len(rows), 64):
+                batch = rows[i:i + 64]
+                vecs = embedder.encode([t for _, t in batch])
+                for (rid, _t), v in zip(batch, vecs):
+                    self.con.execute(
+                        "INSERT INTO vec_chunks(chunk_id, embedding) VALUES(?,?)",
+                        (rid, serialize_float32(v)))
+            with self.con:
+                self.set_embedder_id(embedder.id)
+        return len(rows)
+
+    def _ensure_space(self) -> None:
+        """入库前保证空间一致：不匹配则重嵌全部；降级模式入库直接拒绝。"""
+        stored = self.embedder_id()
+        current = self.embedder.id
+        if stored == current:
+            return
+        if not current.startswith("onnx:"):
+            # 降级（Hash）模式：真实向量若已存在则不能污染，直接拒绝入库
+            if stored and stored.startswith("onnx:"):
+                raise ValueError(
+                    "嵌入模型未就绪（当前为降级模式），入库会污染语义空间——请先完成模型下载")
+            self.set_embedder_id(current)      # 空库/纯降级库：如实记录
+            return
+        self.reembed(self.embedder)            # 用真实模型重嵌（含无指纹旧库自愈）

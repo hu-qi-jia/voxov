@@ -20,6 +20,7 @@ class HashEmbedder:
 
     def __init__(self, dim: int = 512) -> None:
         self.dim = dim
+        self.id = f"hash-sha256:{dim}"      # 嵌入空间指纹：入库/查询必须同空间
 
     def encode_query(self, query: str) -> list[float]:
         return self.encode([query])[0]
@@ -54,6 +55,7 @@ class OnnxEmbedder:
         self._sess = ort.InferenceSession(
             str(model_dir / "model.onnx"), providers=["CPUExecutionProvider"])
         self.dim = 512
+        self.id = "onnx:bge-small-zh-v1.5:512"
 
     def encode(self, texts: list[str]) -> list[list[float]]:
         if not texts:

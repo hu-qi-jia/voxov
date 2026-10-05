@@ -83,7 +83,7 @@ def classify_turn(text: str) -> str:
 REF_DIST_MAX = 1.05   # L2（单位向量）⇔ cos ≥ 0.45；彩排模式校准
 ```
 
-（2026-10-05 终审裁决：彩排校准载体随彩排删除失效，1.05 为未实测默认；校准方式=真实录音跑 trigger 观察 notice 分布，入口 RagService.REF_DIST_MAX。）
+（2026-10-05 终审裁决：彩排校准载体随彩排删除失效，1.05 为未实测默认；校准方式=真实录音跑 trigger 观察 notice 分布，入口 RagService.REF_DIST_MAX。**同日校准完成**：真实库 245 块重嵌后实测——相关问法 top=0.76-0.87，无关问题 ~1.00，阈值定为 **0.92**。另：发现并修复嵌入空间错配事故——降级期入库的 Hash 向量与 Onnx 查询空间不一致导致全量 GENERIC；KB 现记录 embedder 指纹，启动/入库时自动重嵌自愈，查询侧空间错配时弃用向量路只信 FTS。）
 
 - `statement` → 不检索；
 - 其他 → `retrieve(k=5)`；

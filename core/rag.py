@@ -24,7 +24,9 @@ def _fts_exact_hit(query: str, contexts: list) -> bool:
 class RagService:
     """热键/自动触发的完整编排：提取话轮 → 分类 → 检索路由 → 流式生成 → 记录。"""
 
-    REF_DIST_MAX = 1.05   # sqlite-vec L2（单位向量）⇔ cos≥约0.45。未实测默认值：调参入口在此，用真实面试录音跑 trigger 观察 notice 分布校准（过松=偶发注入弱资料=回退旧行为；过紧=靠 FTS 越过兜底）。
+    REF_DIST_MAX = 0.92   # 实测校准（2026-10-05，bge-small-zh + 用户真实库 245 块）：
+                          # 相关问法 top=0.76-0.87，无关问题 ~1.00；0.92 两侧有余量。
+                          # 调参入口在此；L2（单位向量）⇔ cos≥约0.58
 
     def __init__(self, retriever: Retriever, llm: LLMClient,
                  recorder: SessionRecorder | None = None) -> None:
@@ -52,14 +54,15 @@ class RagService:
             use_refs = False                      # 陈述不检索（spec §5.2）
         else:
             contexts = self.retriever.retrieve(turn, k=5)
-            reliable = getattr(self.retriever, "distances_reliable", False)
+            reliable = (getattr(self.retriever, "distances_reliable", False)
+                        and not getattr(self.retriever, "space_mismatch", False))
             if reliable:
                 top = getattr(self.retriever, "last_top_distance", None)
                 use_refs = bool(contexts) and (
                     (top is not None and top <= self.REF_DIST_MAX)
                     or _fts_exact_hit(turn, contexts))
             else:
-                use_refs = bool(contexts)         # Hash 降级：维持旧行为
+                use_refs = bool(contexts)         # Hash/空间错配：FTS 兜底，有结果即注入
         self.last_had_refs = use_refs
         mode = ("statement" if self.last_turn_class == "statement"
                 else "refs" if use_refs else "generic")

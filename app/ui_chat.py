@@ -103,6 +103,14 @@ class AnswerTurn(QWidget):
         if self._buf:
             self.note.setText("生成中断——以上为已收到的部分，可稍后重试")
 
+    def fail(self, msg: str) -> None:
+        """失败可见化：有内容标注截断；空内容换掉「正在生成…」占位并说明原因。"""
+        if self._buf:
+            self.mark_interrupted()
+        else:
+            self.view.setPlaceholderText("生成失败——可重新提问")
+            self.note.setText(msg)
+
     def _parent_scroll_to_bottom(self) -> None:
         p = self.parent()
         while p is not None:

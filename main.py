@@ -32,10 +32,20 @@ def build_app():
 
     recorder = SessionRecorder(sessions_dir=cfg.sessions_dir)          # 审查 I7：落盘
     rag = make_rag(recorder)
+    # 嵌入空间自愈：KB 若由不同嵌入模型构建（如降级期入库），用当前模型重嵌全部内容。
+    # 只在真实模型下执行——降级模式重嵌会污染空间（kb._ensure_space 会拒绝降级入库）。
+    try:
+        stored = kb.embedder_id()
+        if ((stored is None and kb.chunk_count() > 0) or
+                (stored not in (None, embedder.id) and embedder.id.startswith("onnx:"))):
+            n = kb.reembed(embedder)
+            print(f"[知识库] 嵌入空间不匹配（{stored}），已用当前模型重嵌 {n} 块")
+    except Exception:
+        pass
     if cfg.llm_base_url and cfg.llm_api_key:   # 后台预热 LLM 连接，首答不付冷启动
         import threading
         threading.Thread(target=rag.llm.warmup, daemon=True, name="llm-warmup").start()
-    return cfg, kb, rag, recorder
+    return cfg, kb, make_rag, recorder
 
 
 def main() -> int:
@@ -43,7 +53,8 @@ def main() -> int:
     from app.theme import apply as apply_theme
     apply_theme(app)
     app.setQuitOnLastWindowClosed(False)
-    cfg, kb, rag, recorder = build_app()
+    cfg, kb, make_rag, recorder = build_app()
+    rag = make_rag(recorder)       # 启动默认实例（warmup/兼容）；每次生成由工厂新建
     # 单实例：两个实例同时自动下载同一目录会互相破坏。
     # 第二次启动不劝退——先尝试唤起首实例（reveal 急隐藏态），唤起失败才提示。
     from app.instance import (acquire_single_instance, release_single_instance,
@@ -61,12 +72,28 @@ def main() -> int:
     try:
         import faulthandler
         fh = open(cfg.data_dir / "threads_dump.log", "w", encoding="utf-8")
+        faulthandler.enable(file=fh)   # 崩溃（含 Qt fatal）时留 Python 侧栈
         faulthandler.dump_traceback_later(45, exit=False, file=fh)
+    except Exception:
+        pass
+    # 诊断：Qt 消息（含 qFatal 原因文本）落盘——窗口版 stderr 丢失，闪退曾无从排查
+    try:
+        from PySide6.QtCore import qInstallMessageHandler, QtMsgType
+
+        def _qt_log(msg_type, context, message):
+            kinds = {QtMsgType.QtDebugMsg: "DEBUG", QtMsgType.QtInfoMsg: "INFO",
+                     QtMsgType.QtWarningMsg: "WARN", QtMsgType.QtCriticalMsg: "CRIT",
+                     QtMsgType.QtFatalMsg: "FATAL"}
+            with open(cfg.data_dir / "qt.log", "a", encoding="utf-8") as f:
+                f.write(f"{kinds.get(msg_type, '?')} {message}\n")
+
+        qInstallMessageHandler(_qt_log)
     except Exception:
         pass
     from core.downloader import models_ready
     models_ok = models_ready(cfg.models_dir)
-    win = MainWindow(cfg, kb_factory=lambda: kb, rag_factory=lambda: rag)
+    win = MainWindow(cfg, kb_factory=lambda: kb,
+                     rag_factory=lambda: make_rag(recorder))
     win._recorder = recorder
     win._started_without_models = not models_ok   # 成功后提示重启升级语义检索
     win.show()

@@ -99,3 +99,42 @@ def test_fts_search_matches_terms_not_whole_phrase(kb, tmp_path):
     assert len(hits) >= 1
     rows = kb.get_chunks(hits)
     assert any("MVCC" in r[1] for r in rows)
+
+
+# --- 嵌入空间指纹：跨空间污染防护 + 自愈重嵌 ---
+def test_space_mismatch_detected_after_embedder_change(tmp_path):
+    from core.embedder import OnnxEmbedder
+    kb = KnowledgeBase(tmp_path / "kb.db", HashEmbedder(dim=512))
+    p = tmp_path / "doc.md"
+    p.write_text(DOC, encoding="utf-8")
+    kb.ingest_file(p)
+    assert kb.embedder_id() == "hash-sha256:512"
+    onnx = OnnxEmbedder.__new__(OnnxEmbedder)      # 只为指纹/重嵌测试，不触模型
+    onnx.dim = 512
+    onnx.id = "onnx:bge-small-zh-v1.5:512"
+    def fake_encode(texts):
+        import numpy as np
+        out = []
+        for t in texts:
+            rng = np.random.default_rng(len(t))
+            v = rng.normal(size=512)
+            out.append((v / np.linalg.norm(v)).tolist())
+        return out
+    onnx.encode = fake_encode
+    assert kb.space_mismatch(onnx) is True          # 空间不匹配被识别
+    n = kb.reembed(onnx)                            # 文本在库：无需原始文件即可自愈
+    assert n > 0
+    assert kb.embedder_id() == "onnx:bge-small-zh-v1.5:512"
+    assert kb.space_mismatch(onnx) is False
+
+def test_hash_ingest_into_onnx_space_refuses(tmp_path):
+    """onnx 空间的库在降级（Hash）模式下拒入库：防止污染语义空间。"""
+    kb = KnowledgeBase(tmp_path / "kb.db", HashEmbedder(dim=512))
+    p = tmp_path / "doc.md"
+    p.write_text(DOC, encoding="utf-8")
+    kb.ingest_file(p)                                # hash 空间建库
+    kb.set_embedder_id("onnx:bge-small-zh-v1.5:512")  # 模拟库实为 onnx 空间
+    # 以降级（hash）embedder 入库 onnx 空间的库：_ensure_space 必须拒绝（防污染）
+    import pytest
+    with pytest.raises(ValueError, match="嵌入模型未就绪"):
+        kb.ingest_file(p)

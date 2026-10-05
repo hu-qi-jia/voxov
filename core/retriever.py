@@ -37,10 +37,12 @@ class Retriever:
     def retrieve(self, query: str, k: int = 5) -> list[Retrieved]:
         query = query.strip()
         self.last_top_distance = None
+        self.space_mismatch = self.kb.space_mismatch(self.embedder)
         if not query:
             return []
-        vec = self.embedder.encode_query(query)
-        vec_hits = self.kb.vector_search(vec, k=k)          # [(cid, L2 dist)]
+        # 空间不匹配（库由不同嵌入模型构建）：向量路必须弃用，只信 FTS
+        vec_hits = [] if self.space_mismatch else self.kb.vector_search(
+            self.embedder.encode_query(query), k=k)
         if vec_hits:
             self.last_top_distance = min(d for _, d in vec_hits)
         rankings = [

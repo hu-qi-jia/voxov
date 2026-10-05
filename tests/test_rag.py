@@ -147,3 +147,15 @@ def test_question_no_hits_keeps_legacy_notice(tmp_path):
     "".join(svc.trigger())
     assert svc.last_notice in ("通用回答（知识库无命中）", "接话 · 未用资料")
     assert len(svc.llm.calls) == 1
+
+
+def test_space_mismatch_disables_vector_distance():
+    """空间错配（库由其他嵌入模型构建）：距离信号不可信，走 FTS 兜底。"""
+    ctx = Retrieved(chunk_id=2, text="项目经历应当用 STAR 法则组织", heading_path="h",
+                    source_file="s.md", score=-1)
+    r = FakeRetriever([ctx], reliable=True, top=1.3)
+    r.space_mismatch = True
+    svc = RagService(r, FakeLLM())
+    _feed(svc, "介绍一下你的项目经历")
+    "".join(svc.trigger())
+    assert svc.last_notice == "基于知识库 · 1 条资料"    # FTS 越过兜底仍可用

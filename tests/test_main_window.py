@@ -154,27 +154,47 @@ def test_no_rehearsal_leftovers(win):
     assert not hasattr(w, "_info")
 
 
-def test_apply_settings_rebuilds_llm(win, monkeypatch):
-    from core.generator import LLMClient
+def test_apply_settings_rebinds_and_refreshes(win, monkeypatch):
+    """并行架构下 LLMClient 由工厂按当前 cfg 在每次生成时新建；
+    _apply_settings 的职责收敛为重绑热键 + 刷新状态行。"""
     import app.hotkey as hk
     made = []
-    monkeypatch.setattr("core.generator.LLMClient",
-                        lambda *a, **k: made.append(a) or object())
 
     class _Sig:
         def connect(self, *a): pass
 
-    class _NB:                       # 不注册真实全局热键钩（C4）
+    class _NB:
         errors = []
-        def __init__(self):
+        def __init__(self, a, b):
+            made.append((a, b))
             self.pressed = _Sig()
             self.hidden = _Sig()
-    monkeypatch.setattr(hk, "HotkeyBridge", lambda *a, **k: _NB())
-    w, rag = win
-    w._rag = rag
+        def stop(self): pass
+
+    monkeypatch.setattr(hk, "HotkeyBridge", _NB)
+    w, _ = win
+    w.cfg.hotkey = "ctrl+alt+q"
     w._apply_settings()
-    assert made[0][0] == w.cfg.llm_base_url and made[0][2] == w.cfg.llm_model
-    assert len(made) == 1 and rag.llm is not None
+    assert made == [("ctrl+alt+q", "ctrl+alt+h")]
+    assert w.status_info.text()       # 已刷新
+
+
+def test_parallel_hotkey_spawns_independent_workers(win):
+    """连续提问并行处理：每次触发独立 rag + 独立气泡，互不丢弃。"""
+    made = []
+
+    def factory():
+        r = FakeRag()
+        made.append(r)
+        return r
+
+    w, _ = win
+    w._rag_factory = factory
+    w._on_hotkey()
+    w._on_hotkey()
+    assert len(made) == 2 and made[0] is not made[1]   # 独立 RagService（无共享竞态）
+    assert len(w._workers) == 2
+    assert w._chat_answer is not None
 
 
 def test_rebind_hotkeys_replaces_bridge(win, monkeypatch):
