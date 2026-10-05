@@ -90,6 +90,19 @@ class SettingsPage(QWidget):
         form3.addRow("", hint)
         form3.addRow("数据目录", self.data_dir_edit)
         root.addLayout(form3)
+        root.addWidget(_sep())
+
+        # -- 快捷方式 --
+        root.addWidget(QLabel("# 快捷方式"))
+        sc_row = QHBoxLayout()
+        sc_label = QLabel("在桌面创建 voxov.lnk，双击即可启动/唤起")
+        sc_label.setObjectName("hint")
+        sc_row.addWidget(sc_label)
+        sc_row.addStretch(1)
+        self.shortcut_btn = QPushButton(" 创建桌面快捷方式")
+        self.shortcut_btn.clicked.connect(self._create_shortcut)
+        sc_row.addWidget(self.shortcut_btn)
+        root.addLayout(sc_row)
 
         root.addStretch(1)
         save_row = QHBoxLayout()
@@ -102,6 +115,15 @@ class SettingsPage(QWidget):
         root.addLayout(save_row)
 
         self.refresh_models_state()
+
+    # ---- 保存 ----
+    def _create_shortcut(self) -> None:
+        try:
+            from app.shortcuts import create_desktop_shortcut
+            lnk = create_desktop_shortcut()
+            self._set_status(f"已创建桌面快捷方式：{lnk}", "ok")
+        except Exception as exc:
+            self._set_status(f"快捷方式创建失败：{exc}", "error")
 
     # ---- 保存 ----
     def _on_save_clicked(self) -> None:

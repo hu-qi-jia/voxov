@@ -44,11 +44,17 @@ def main() -> int:
     apply_theme(app)
     app.setQuitOnLastWindowClosed(False)
     cfg, kb, rag, recorder = build_app()
-    # 单实例：两个实例同时自动下载同一目录会互相破坏
-    from app.instance import acquire_single_instance, release_single_instance
+    # 单实例：两个实例同时自动下载同一目录会互相破坏。
+    # 第二次启动不劝退——先尝试唤起首实例（reveal 急隐藏态），唤起失败才提示。
+    from app.instance import (acquire_single_instance, release_single_instance,
+                              start_summon_server, try_summon_running_instance)
     if not acquire_single_instance(cfg.data_dir):
+        if try_summon_running_instance():
+            return 0    # 已把首实例唤到前台（含急隐藏态），本次启动静默退出
         from PySide6.QtWidgets import QMessageBox
-        QMessageBox.warning(None, "Notes", "应用已在运行（请查看系统托盘图标）。")
+        QMessageBox.warning(
+            None, "voxov",
+            "应用已在运行，但唤起失败。\n可在运行中的应用里按 ctrl+alt+h 切换显示。")
         return 1
     app.aboutToQuit.connect(release_single_instance)
     # 诊断：启动 45s 后把全部 Python 线程栈落盘（排查冻结环境 worker 卡点）
@@ -68,6 +74,8 @@ def main() -> int:
     win.rebind_hotkeys()           # 审查 I3c：热键由主窗口持有，设置保存后重绑
     tray = create_tray(win)
     win.tray = tray
+    # 唤起通道：后续启动经此把首实例带到前台（含从急隐藏找回）
+    start_summon_server(lambda: win.reveal())
     return app.exec()
 
 

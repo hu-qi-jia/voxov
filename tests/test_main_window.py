@@ -165,6 +165,7 @@ def test_apply_settings_rebuilds_llm(win, monkeypatch):
         def connect(self, *a): pass
 
     class _NB:                       # 不注册真实全局热键钩（C4）
+        errors = []
         def __init__(self):
             self.pressed = _Sig()
             self.hidden = _Sig()
@@ -184,6 +185,7 @@ def test_rebind_hotkeys_replaces_bridge(win, monkeypatch):
         def connect(self, *a): pass
 
     class _FB:
+        errors = []
         def __init__(self, a, b):
             if a == "bad!!":           # 旧 I3c 锁定的库契约：非法组合注册即抛
                 raise ValueError("bad combo")
@@ -201,3 +203,44 @@ def test_rebind_hotkeys_replaces_bridge(win, monkeypatch):
     w.rebind_hotkeys()
     assert made[-1] == ("ctrl+alt+space", "ctrl+alt+h")   # 回退默认不崩
     assert "stop" in made                                  # 旧桥被停
+
+
+def test_reveal_restores_hidden_window(win):
+    w, _ = win
+    w.show()
+    w._on_hide()
+    assert not w.isVisible()
+    w.reveal()
+    assert w.isVisible()
+    assert w._hidden is False
+
+
+def test_rebind_reports_registered_status(win, monkeypatch):
+    """热键注册成败必须可见（dist 里静默失效曾无从排查）。"""
+    import app.hotkey as hk
+
+    class _Sig:
+        def connect(self, *a): pass
+
+    class _FB:
+        errors = []
+        def __init__(self, a, b):
+            self.pressed = _Sig()
+            self.hidden = _Sig()
+        def stop(self): pass
+
+    class _FBPartial:
+        errors = ["急隐藏 ctrl+alt+h：denied"]
+        def __init__(self, a, b):
+            self.pressed = _Sig()
+            self.hidden = _Sig()
+        def stop(self): pass
+
+    stubs = {"ok": _FB, "partial": _FBPartial}
+    monkeypatch.setattr(hk, "HotkeyBridge", stubs["ok"])
+    w, _ = win
+    w.rebind_hotkeys()
+    assert "热键已注册" in w.status_msg.text()
+    monkeypatch.setattr(hk, "HotkeyBridge", stubs["partial"])
+    w.rebind_hotkeys()
+    assert "部分注册失败" in w.status_msg.text()

@@ -121,18 +121,33 @@ class MainWindow(QMainWindow):
         self._refresh_status_info()
 
     def rebind_hotkeys(self) -> None:
-        """审查 I3c/I4：按当前配置重建全局热键；非法组合回退默认，绝不崩溃。"""
+        """审查 I3c/I4：按当前配置重建全局热键；非法组合回退默认，绝不崩溃。
+        注册成败必须可见（dist 里热键静默失效曾无从排查）。"""
         from app.hotkey import HotkeyBridge
         if self.bridge is not None:
             self.bridge.stop()
         try:
             nb = HotkeyBridge(self.cfg.hotkey, self.cfg.hide_hotkey)
-        except Exception:
-            self.set_status("热键无效，已回退默认组合", "error")
+        except Exception as exc:
+            self.set_status(f"热键注册失败（{exc}），已回退默认组合", "error")
             nb = HotkeyBridge("ctrl+alt+space", "ctrl+alt+h")
         nb.pressed.connect(self._on_hotkey)
         nb.hidden.connect(self._on_hide)
         self.bridge = nb
+        if nb.errors:
+            self.set_status(f"热键部分注册失败：{'；'.join(nb.errors)}", "warn", hold=8000)
+        else:
+            self.set_status(f"热键已注册：{self.cfg.hotkey}（触发） / "
+                            f"{self.cfg.hide_hotkey}（急隐藏）", "info", hold=6000)
+
+    def reveal(self) -> None:
+        """第二次启动唤起 / 从急隐藏找回：窗口+托盘一并恢复并前置。"""
+        self._hidden = False
+        self.setVisible(True)
+        if self.tray is not None:
+            self.tray.setVisible(True)
+        self.raise_()
+        self.activateWindow()
 
     def set_status(self, text: str, kind: str = "info", hold: int = 4000) -> None:
         self.status_msg.setStyleSheet(f"color: {STATUS_COLOR.get(kind, STATUS_COLOR['info'])};")

@@ -70,3 +70,23 @@ def test_refresh_preserves_downloading_state(qtbot, tmp_path, monkeypatch):
     p.refresh_models_state(downloading=True)
     assert not p.dl_btn.isEnabled()
     assert not p.progress.isHidden()
+
+
+def test_shortcut_button_reports_created(qtbot, tmp_path, monkeypatch):
+    p, _, statuses = _page(qtbot, tmp_path, monkeypatch)
+    called = []
+    import app.shortcuts as sc
+    monkeypatch.setattr(sc, "create_desktop_shortcut", lambda: called.append(1) or "D:/voxov.lnk")
+    p.shortcut_btn.click()
+    assert called == [1]
+    assert any("已创建" in t for t, _ in statuses)
+
+
+def test_shortcut_button_reports_failure(qtbot, tmp_path, monkeypatch):
+    p, _, statuses = _page(qtbot, tmp_path, monkeypatch)
+    import app.shortcuts as sc
+    def boom():
+        raise RuntimeError("boom")
+    monkeypatch.setattr(sc, "create_desktop_shortcut", boom)
+    p.shortcut_btn.click()
+    assert any("失败" in t for t, _ in statuses)
